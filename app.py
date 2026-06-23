@@ -119,7 +119,7 @@ SECURITY_ALERTS_FILE = os.path.join(BASE_PATH, 'security_alerts.json')
 NODEJS_PROCS_FILE  = os.path.join(BASE_PATH, 'nodejs_procs.json')
 PHP_CONFIG_FILE    = os.path.join(BASE_PATH, 'php_config.json')
 
-DEFAULT_TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN', '8875119211:AAGfYS9qnMo1YsbYf_xWwVlq8HW22FfJMbM')
+DEFAULT_TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN', '8875119211:AAEe7ExhGuYkqgSoRodEa3idwlO_9DsjqOM')
 DEFAULT_TELEGRAM_OWNER_ID = str(os.environ.get('TELEGRAM_OWNER_ID', '5254495041'))
 
 PROFILE_IMAGE_URL = "https://h.top4top.io/p_3820pynba0.png"
