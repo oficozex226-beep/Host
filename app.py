@@ -2,7 +2,7 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════╗
 ║  🚀 SERVER HUB — Professional Hosting Control Panel                      ║
-║  Version: 2.0  |  By: SHBH_S1  |  Admin: RIKO                       ║
+║  Version: 2.0  |  By: SHBH_S1  |  Admin: RIKO                            ║
 ╠══════════════════════════════════════════════════════════════════════════╣
 ║  - Full PHP / Node.js / Python support                                   ║
 ║  - Docker user isolation                                                 ║
@@ -101,6 +101,9 @@ PROCESSES_FILE     = os.path.join(BASE_PATH, 'processes.json')
 SCHEDULES_FILE     = os.path.join(BASE_PATH, 'schedules.json')
 LOGS_FILE          = os.path.join(BASE_PATH, 'activity.log')
 USER_SESSIONS_FILE = os.path.join(BASE_PATH, 'user_sessions.json')
+LOGIN_ATTEMPTS_FILE = os.path.join(BASE_PATH, 'login_attempts.json')
+IP_BANS_FILE        = os.path.join(BASE_PATH, 'ip_bans.json')
+BOT_STATE_FILE      = os.path.join(BASE_PATH, 'telegram_bot_state.json')
 BACKUPS_FOLDER     = os.path.join(BASE_PATH, 'backups')
 TEMP_FOLDER        = os.path.join(BASE_PATH, 'temp')
 PACKAGES_FILE      = os.path.join(BASE_PATH, 'packages.json')
@@ -116,7 +119,7 @@ SECURITY_ALERTS_FILE = os.path.join(BASE_PATH, 'security_alerts.json')
 NODEJS_PROCS_FILE  = os.path.join(BASE_PATH, 'nodejs_procs.json')
 PHP_CONFIG_FILE    = os.path.join(BASE_PATH, 'php_config.json')
 
-DEFAULT_TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN', '8875119211:AAG7pkawzQk-XTq3DXPdU36bAEx0fa_MZwE')
+DEFAULT_TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN', '8875119211:AAGfYS9qnMo1YsbYf_xWwVlq8HW22FfJMbM')
 DEFAULT_TELEGRAM_OWNER_ID = str(os.environ.get('TELEGRAM_OWNER_ID', '5254495041'))
 
 PROFILE_IMAGE_URL = "https://h.top4top.io/p_3820pynba0.png"
@@ -149,6 +152,131 @@ def save_json_file(path, data):
         return True
     except Exception:
         return False
+
+def get_request_ip():
+    try:
+        forwarded = request.headers.get('X-Forwarded-For', '').split(',')[0].strip()
+        return forwarded or request.remote_addr or '0.0.0.0'
+    except Exception:
+        return '0.0.0.0'
+
+def load_bot_state():
+    return load_json_file(BOT_STATE_FILE, {'sessions': {}, 'owner_2fa': {}, 'review_chat_map': {}})
+
+def save_bot_state(data):
+    save_json_file(BOT_STATE_FILE, data)
+
+def get_owner_contact():
+    cfg = load_owner_config()
+    contact = (cfg.get('owner_contact_username') or 'Shbh_s1').strip().lstrip('@')
+    return contact or 'Shbh_s1'
+
+def calculate_risk_score(threats):
+    threats = threats or []
+    if not threats:
+        return 0
+    return min(100, 25 + (len(threats) * 15))
+
+def get_user_role(username):
+    if username == MASTER_USERNAME:
+        return 'Owner'
+    users = load_users()
+    info = users.get(username, {}) if isinstance(users, dict) else {}
+    role = str(info.get('role', 'User')).title()
+    return role if role in {'Owner', 'Admin', 'Moderator', 'User'} else 'User'
+
+def role_rank(role_name):
+    order = {'User': 1, 'Moderator': 2, 'Admin': 3, 'Owner': 4}
+    return order.get(str(role_name or 'User').title(), 1)
+
+def user_has_role(username, minimum_role='User'):
+    return role_rank(get_user_role(username)) >= role_rank(minimum_role)
+
+def get_quarantine_dir(username):
+    qdir = os.path.join(get_user_path(username), '.quarantine')
+    os.makedirs(qdir, exist_ok=True)
+    return qdir
+
+def get_user_storage_bytes(username):
+    base = get_user_path(username)
+    total = 0
+    if os.path.exists(base):
+        for root, dirs, files in os.walk(base):
+            for name in files:
+                fp = os.path.join(root, name)
+                try:
+                    total += os.path.getsize(fp)
+                except Exception:
+                    pass
+    return total
+
+def get_user_runtime_stats(username):
+    cpu = 0.0
+    ram = 0
+    processes = []
+    for pid, info in list(file_processes.items()):
+        if info.get('username') != username:
+            continue
+        proc = info.get('process')
+        if not proc or proc.poll() is not None:
+            continue
+        try:
+            p = psutil.Process(proc.pid)
+            cpu += p.cpu_percent(interval=0.0)
+            ram += p.memory_info().rss
+        except Exception:
+            pass
+        processes.append({'id': pid, 'name': info.get('filename', pid), 'type': 'file'})
+    for pid, info in list(nodejs_processes.items()):
+        if info.get('username') != username:
+            continue
+        proc = info.get('process')
+        if not proc or proc.poll() is not None:
+            continue
+        try:
+            p = psutil.Process(proc.pid)
+            cpu += p.cpu_percent(interval=0.0)
+            ram += p.memory_info().rss
+        except Exception:
+            pass
+        processes.append({'id': pid, 'name': info.get('main_file') or 'Node.js', 'type': 'nodejs'})
+    for name, info in list(running_processes.items()):
+        if info.get('owner') != username:
+            continue
+        proc = info.get('process')
+        if not proc or proc.poll() is not None:
+            continue
+        try:
+            p = psutil.Process(proc.pid)
+            cpu += p.cpu_percent(interval=0.0)
+            ram += p.memory_info().rss
+        except Exception:
+            pass
+        processes.append({'id': name, 'name': name, 'type': 'process'})
+    return {
+        'cpu_percent': round(cpu, 2),
+        'ram_mb': round(ram / (1024 ** 2), 2),
+        'storage_gb': round(get_user_storage_bytes(username) / (1024 ** 3), 3),
+        'active_processes': processes,
+        'servers_count': len(processes)
+    }
+
+def format_user_runtime_stats(username):
+    stats = get_user_runtime_stats(username)
+    proc_lines = []
+    for item in stats['active_processes'][:6]:
+        proc_lines.append(f"• {item['name']} ({item['type']})")
+    if not proc_lines:
+        proc_lines.append("• لا توجد عمليات نشطة")
+    return (
+        f"👤 <b>{html.escape(username)}</b>\n"
+        f"🔐 الدور: <b>{get_user_role(username)}</b>\n"
+        f"🧠 RAM: <b>{stats['ram_mb']} MB</b>\n"
+        f"⚙️ CPU: <b>{stats['cpu_percent']}%</b>\n"
+        f"💽 التخزين: <b>{stats['storage_gb']} GB</b>\n"
+        f"🟢 العمليات النشطة: <b>{len(stats['active_processes'])}</b>\n"
+        + "\n".join(proc_lines)
+    )
 
 # ─────────────────────────────────────────────
 #  4.  Master Config
@@ -185,6 +313,9 @@ init_json_file(USERS_FILE, {})
 init_json_file(PROCESSES_FILE, {})
 init_json_file(SCHEDULES_FILE, {})
 init_json_file(USER_SESSIONS_FILE, {})
+init_json_file(LOGIN_ATTEMPTS_FILE, {'ips': {}})
+init_json_file(IP_BANS_FILE, {'ips': {}})
+init_json_file(BOT_STATE_FILE, {'sessions': {}, 'owner_2fa': {}, 'review_chat_map': {}})
 init_json_file(PACKAGES_FILE, {'pip': [], 'apt': [], 'npm': []})
 init_json_file(DOCKER_FILE, {'containers': [], 'images': []})
 init_json_file(PORTS_FILE, {'ports': []})
@@ -192,7 +323,9 @@ init_json_file(ACTIVITY_FILE, {'events': []})
 init_json_file(OWNER_CONFIG_FILE, {
     'telegram_token': DEFAULT_TELEGRAM_TOKEN, 'telegram_owner_id': DEFAULT_TELEGRAM_OWNER_ID, 'bot_linked': True,
     'bot_username': '', 'owner_control_mode': 'telegram_only',
-    'panel_name': 'SERVER HUB', 'welcome_msg': 'Welcome to SERVER HUB'
+    'panel_name': 'SERVER HUB', 'welcome_msg': 'Welcome to SERVER HUB',
+    'owner_contact_username': 'Shbh_s1',
+    'owner_two_factor': True
 })
 init_json_file(MAINTENANCE_FILE, {'enabled': False, 'message': 'Under maintenance. Try later.'})
 init_json_file(BOT_STATS_FILE, {'total_users':0,'total_servers':0,'active_bots':0,'zip_files':0,'last_updated':''})
@@ -212,7 +345,9 @@ def load_owner_config():
         'bot_username': '',
         'owner_control_mode': 'telegram_only',
         'panel_name': 'SERVER HUB',
-        'welcome_msg': 'Welcome to SERVER HUB'
+        'welcome_msg': 'Welcome to SERVER HUB',
+        'owner_contact_username': 'Shbh_s1',
+        'owner_two_factor': True
     }
     cfg = load_json_file(OWNER_CONFIG_FILE, d)
     for k, v in d.items():
@@ -228,7 +363,7 @@ def load_announcements(): return load_json_file(ANNOUNCE_FILE, {'list':[]})
 def save_announcements(d): save_json_file(ANNOUNCE_FILE, d)
 
 def load_security_alerts(): return load_json_file(SECURITY_ALERTS_FILE, {'alerts':[]})
-def save_security_alert(username, filename, threats, ip):
+def save_security_alert(username, filename, threats, ip, file_path='', original_path='', tg_username='', chat_id=''):
     """Store a security alert and return the alert dict."""
     data = load_security_alerts()
     alert = {
@@ -238,12 +373,120 @@ def save_security_alert(username, filename, threats, ip):
         'threats': threats,
         'ip': ip,
         'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        'reviewed': False
+        'reviewed': False,
+        'status': 'pending',
+        'risk_score': calculate_risk_score(threats),
+        'file_path': file_path,
+        'original_path': original_path,
+        'tg_username': tg_username,
+        'chat_id': str(chat_id or ''),
+        'sandbox_status': 'queued'
     }
     data['alerts'].insert(0, alert)
     data['alerts'] = data['alerts'][:200]   # keep last 200
     save_json_file(SECURITY_ALERTS_FILE, data)
     return alert
+
+def get_security_alert(alert_id):
+    data = load_security_alerts()
+    for alert in data.get('alerts', []):
+        if alert.get('id') == alert_id:
+            return alert
+    return None
+
+def update_security_alert(alert_id, **kwargs):
+    data = load_security_alerts()
+    for alert in data.get('alerts', []):
+        if alert.get('id') == alert_id:
+            alert.update(kwargs)
+            save_json_file(SECURITY_ALERTS_FILE, data)
+            return alert
+    return None
+
+def alert_review_keyboard(alert_id):
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        types.InlineKeyboardButton("✅ قبول", callback_data=f"review:approve:{alert_id}"),
+        types.InlineKeyboardButton("❌ رفض", callback_data=f"review:reject:{alert_id}")
+    )
+    kb.add(
+        types.InlineKeyboardButton("🔍 عرض التحليل", callback_data=f"review:analysis:{alert_id}"),
+        types.InlineKeyboardButton("📥 تحميل الملف", callback_data=f"review:download:{alert_id}")
+    )
+    return kb
+
+def render_security_alert_text(alert):
+    if not alert:
+        return "البلاغ غير موجود."
+    threats = alert.get('threats') or []
+    reasons = "\n".join(f"• {html.escape(str(t))}" for t in threats[:8]) if threats else "• لا توجد أسباب محفوظة"
+    return (
+        "🚨 <b>ملف قيد المراجعة</b>\n"
+        f"👤 الرافع: <b>{html.escape(alert.get('username','-'))}</b>\n"
+        f"📱 تيليجرام: <b>@{html.escape(alert.get('tg_username') or 'غير معروف')}</b>\n"
+        f"📄 الملف: <code>{html.escape(alert.get('filename','-'))}</code>\n"
+        f"🌐 IP: <code>{html.escape(alert.get('ip','-'))}</code>\n"
+        f"⚠️ نسبة الخطورة: <b>{int(alert.get('risk_score', 0))}%</b>\n"
+        f"🧪 Sandbox: <b>{html.escape(alert.get('sandbox_status','queued'))}</b>\n"
+        f"📌 الحالة: <b>{html.escape(alert.get('status','pending'))}</b>\n"
+        f"🕒 الوقت: <b>{html.escape(alert.get('time','-'))}</b>\n\n"
+        f"🔎 أسباب الاشتباه:\n{reasons}"
+    )
+
+def send_security_alert_to_owner(alert):
+    cfg = load_owner_config()
+    if not (cfg.get('bot_linked') and cfg.get('telegram_token') and cfg.get('telegram_owner_id')):
+        return False
+    try:
+        if TELEGRAM_BOT and BOT_RUNTIME.get('running'):
+            sent = TELEGRAM_BOT.send_message(
+                cfg['telegram_owner_id'],
+                render_security_alert_text(alert),
+                reply_markup=alert_review_keyboard(alert['id'])
+            )
+            state = load_bot_state()
+            state.setdefault('review_chat_map', {})[alert['id']] = {
+                'chat_id': str(sent.chat.id),
+                'message_id': sent.message_id
+            }
+            save_bot_state(state)
+        else:
+            requests.post(
+                f"https://api.telegram.org/bot{cfg['telegram_token']}/sendMessage",
+                json={
+                    'chat_id': cfg['telegram_owner_id'],
+                    'text': render_security_alert_text(alert),
+                    'parse_mode': 'HTML'
+                },
+                timeout=10
+            )
+        return True
+    except Exception:
+        return False
+
+def perform_alert_action(alert_id, action_name, actor='system'):
+    alert = get_security_alert(alert_id)
+    if not alert:
+        return False, 'البلاغ غير موجود.'
+    qpath = alert.get('file_path', '')
+    original_path = alert.get('original_path', '')
+    if action_name == 'approve':
+        if qpath and original_path and os.path.exists(qpath):
+            os.makedirs(os.path.dirname(original_path), exist_ok=True)
+            shutil.move(qpath, original_path)
+        alert = update_security_alert(alert_id, status='approved', reviewed=True, sandbox_status='approved')
+        log_activity(actor, 'security.alert.approved', alert_id)
+        return True, f"✅ تمت الموافقة على الملف: {alert.get('filename','-')}"
+    if action_name == 'reject':
+        if qpath and os.path.exists(qpath):
+            try:
+                os.remove(qpath)
+            except Exception:
+                pass
+        alert = update_security_alert(alert_id, status='rejected', reviewed=True, sandbox_status='rejected')
+        log_activity(actor, 'security.alert.rejected', alert_id)
+        return True, f"❌ تم رفض الملف وحذفه: {alert.get('filename','-')}"
+    return False, 'إجراء غير معروف.'
 
 
 # ─────────────────────────────────────────────
@@ -296,22 +539,143 @@ def send_owner_message(text, reply_markup=None):
 def owner_bot_menu():
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
-        types.InlineKeyboardButton("📊 الحالة", callback_data="ownerbot:stats"),
-        types.InlineKeyboardButton("👥 المستخدمون", callback_data="ownerbot:users"),
+        types.InlineKeyboardButton("👥 إدارة المستخدمين", callback_data="ownerbot:users"),
+        types.InlineKeyboardButton("🚀 إدارة السيرفرات", callback_data="ownerbot:servers"),
     )
     kb.add(
+        types.InlineKeyboardButton("📁 إدارة الملفات", callback_data="ownerbot:files"),
+        types.InlineKeyboardButton("📢 الإذاعة", callback_data="ownerbot:broadcast_help"),
+    )
+    kb.add(
+        types.InlineKeyboardButton("📜 السجلات", callback_data="ownerbot:logs"),
+        types.InlineKeyboardButton("🛡️ الحماية", callback_data="ownerbot:security"),
+    )
+    kb.add(
+        types.InlineKeyboardButton("📊 الحالة", callback_data="ownerbot:stats"),
         types.InlineKeyboardButton("⏳ الطلبات", callback_data="ownerbot:pending"),
-        types.InlineKeyboardButton("🧰 العمليات", callback_data="ownerbot:processes"),
     )
     kb.add(
         types.InlineKeyboardButton("🟢 تشغيل الصيانة", callback_data="ownerbot:maint_on"),
         types.InlineKeyboardButton("🔴 إيقاف الصيانة", callback_data="ownerbot:maint_off"),
     )
     kb.add(
-        types.InlineKeyboardButton("📢 الإعلانات", callback_data="ownerbot:announcements"),
+        types.InlineKeyboardButton("📡 تحديث ربط البوت", callback_data="ownerbot:botcfg"),
         types.InlineKeyboardButton("♻️ إعادة تشغيل اللوحة", callback_data="ownerbot:restart"),
     )
     return kb
+
+def guest_bot_menu():
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        types.InlineKeyboardButton("🧾 معلومات الاستضافة", callback_data="guest:hosting"),
+        types.InlineKeyboardButton("📡 حالة السيرفر", callback_data="guest:status"),
+    )
+    kb.add(
+        types.InlineKeyboardButton("📨 طلب سيرفر", callback_data="guest:request"),
+        types.InlineKeyboardButton("👤 تسجيل الدخول", callback_data="guest:login"),
+    )
+    kb.add(
+        types.InlineKeyboardButton("💬 تواصل مع المالك", url=f"https://t.me/{get_owner_contact()}")
+    )
+    return kb
+
+def user_bot_menu(username):
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        types.InlineKeyboardButton("📊 حالة السيرفر", callback_data="user:status"),
+        types.InlineKeyboardButton("🧠 الموارد", callback_data="user:resources"),
+    )
+    kb.add(
+        types.InlineKeyboardButton("📁 ملفاتي", callback_data="user:files"),
+        types.InlineKeyboardButton("🚪 تسجيل الخروج", callback_data="user:logout"),
+    )
+    if user_has_role(username, 'Moderator'):
+        kb.add(types.InlineKeyboardButton("📜 سجلي", callback_data="user:activity"))
+    return kb
+
+def render_public_bot_home():
+    stats = get_system_stats()
+    cfg = load_owner_config()
+    return (
+        f"🤖 <b>{html.escape(cfg.get('panel_name', 'SERVER HUB'))}</b>\n"
+        "لوحة تيليجرام تفاعلية بالكامل بالأزرار.\n\n"
+        "لغير المالك يظهر فقط محتوى الاستضافة العام.\n"
+        f"• المعالج: <b>{stats.get('cpu', '—')}</b>\n"
+        f"• الذاكرة: <b>{stats.get('memory', '—')}</b>\n"
+        f"• التخزين: <b>{stats.get('disk', '—')}</b>\n"
+        f"• وقت التشغيل: <b>{stats.get('uptime', '—')}</b>\n\n"
+        f"إذا لم يكن لديك حساب تواصل مع المالك: <b>@{html.escape(get_owner_contact())}</b>"
+    )
+
+def format_owner_logs_summary():
+    if not os.path.exists(LOGS_FILE):
+        return "لا توجد سجلات حالياً."
+    try:
+        with open(LOGS_FILE, 'r', encoding='utf-8', errors='ignore') as f:
+            lines = [line.strip() for line in f.readlines()[-12:]]
+        return "📜 <b>آخر السجلات</b>\n" + ("\n".join(html.escape(x) for x in lines) if lines else "فارغ")
+    except Exception as exc:
+        return f"تعذر قراءة السجلات: {html.escape(str(exc))}"
+
+def format_security_summary():
+    alerts = load_security_alerts().get('alerts', [])
+    pending = [a for a in alerts if a.get('status', 'pending') == 'pending']
+    banned = load_json_file(IP_BANS_FILE, {'ips': {}}).get('ips', {})
+    return (
+        "🛡️ <b>الحماية</b>\n"
+        f"• ملفات قيد المراجعة: <b>{len(pending)}</b>\n"
+        f"• عناوين IP محظورة: <b>{len([1 for _,v in banned.items() if isinstance(v, dict) and v.get('until')])}</b>\n"
+        f"• 2FA للمالك: <b>{'مفعّل' if load_owner_config().get('owner_two_factor', True) else 'متوقف'}</b>\n"
+        "• Rate Limit: <b>مفعّل</b>"
+    )
+
+def format_owner_servers_summary():
+    total = len(load_users())
+    runtime = []
+    for pid, info in file_processes.items():
+        if info.get('process') and info['process'].poll() is None:
+            runtime.append(f"• {info.get('username')} → {info.get('filename')}")
+    for pid, info in nodejs_processes.items():
+        if info.get('process') and info['process'].poll() is None:
+            runtime.append(f"• {info.get('username')} → Node.js:{info.get('port','?')}")
+    if not runtime:
+        runtime.append("• لا توجد سيرفرات نشطة حالياً")
+    return f"🚀 <b>إدارة السيرفرات</b>\n• إجمالي المستخدمين: <b>{total}</b>\n" + "\n".join(runtime[:15])
+
+def format_owner_files_summary():
+    total_files = 0
+    total_size = 0
+    try:
+        for root, dirs, files in os.walk(USERS_FOLDER):
+            total_files += len(files)
+            for file_name in files:
+                fp = os.path.join(root, file_name)
+                try:
+                    total_size += os.path.getsize(fp)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return (
+        "📁 <b>إدارة الملفات</b>\n"
+        f"• عدد الملفات: <b>{total_files}</b>\n"
+        f"• الحجم الإجمالي: <b>{round(total_size / (1024**3), 2)} GB</b>\n"
+        "• ملفات المستخدمين معزولة حسب مجلد كل حساب."
+    )
+
+def format_user_files_summary(username):
+    base = get_user_path(username)
+    rows = []
+    try:
+        for name in sorted(os.listdir(base))[:15]:
+            fp = os.path.join(base, name)
+            icon = "📂" if os.path.isdir(fp) else "📄"
+            rows.append(f"{icon} {html.escape(name)}")
+    except Exception:
+        rows.append("تعذر قراءة ملفاتك حالياً.")
+    if not rows:
+        rows.append("لا توجد ملفات بعد.")
+    return "📁 <b>ملفاتك فقط</b>\n" + "\n".join(rows)
 
 def format_owner_stats():
     stats = get_system_stats()
@@ -352,7 +716,7 @@ def format_pending_summary():
         rows.append(f"⏳ <b>{username}</b> · @{info.get('tg_username', '-')}")
     if len(pending) > 15:
         rows.append(f"… وباقي <b>{len(pending) - 15}</b> طلب")
-    rows.append("\nللموافقة: <code>/approve اسم_المستخدم</code>")
+    rows.append("\nاستخدم أزرار الإدارة للمراجعة والموافقة.")
     return "⏳ <b>طلبات التسجيل المعلقة</b>\n" + "\n".join(rows)
 
 def format_processes_summary():
@@ -465,161 +829,325 @@ def start_telegram_owner_bot():
     bot = telebot.TeleBot(cfg['telegram_token'], parse_mode='HTML', threaded=True)
     TELEGRAM_BOT = bot
 
-    def owner_allowed(entity):
-        uid = str(getattr(getattr(entity, 'from_user', None), 'id', ''))
-        ok = uid == str(load_owner_config().get('telegram_owner_id', ''))
-        if not ok:
+    def clean_previous_bot_processes():
+        current_pid = os.getpid()
+        current_script = os.path.abspath(__file__)
+        for proc in psutil.process_iter(['pid', 'cmdline']):
             try:
-                target = getattr(entity, 'message', entity)
-                bot.send_message(target.chat.id, "⛔ هذا البوت مخصص للمالك فقط.")
+                if proc.info['pid'] == current_pid:
+                    continue
+                cmdline = ' '.join(proc.info.get('cmdline') or [])
+                if current_script in cmdline:
+                    proc.kill()
             except Exception:
                 pass
-        return ok
 
-    def reply_menu(chat_id, text_value):
-        bot.send_message(chat_id, text_value, reply_markup=owner_bot_menu())
-
-    @bot.message_handler(commands=['start', 'menu', 'help'])
-    def owner_bot_start(message):
-        if not owner_allowed(message):
-            return
-        reply_menu(
-            message.chat.id,
-            "🤖 <b>لوحة التحكم المرتبطة بالموقع جاهزة</b>\n"
-            "الأوامر الأساسية:\n"
-            "• <code>/stats</code>\n"
-            "• <code>/users</code>\n"
-            "• <code>/pending</code>\n"
-            "• <code>/approve username</code>\n"
-            "• <code>/maintenance on</code> أو <code>/maintenance off</code>\n"
-            "• <code>/announce نص الإعلان</code>\n"
-            "• <code>/setpanel الاسم</code>\n"
-            "• <code>/welcome الرسالة</code>\n"
-            "• <code>/restart</code>"
-        )
-
-    @bot.message_handler(commands=['stats'])
-    def owner_bot_stats(message):
-        if owner_allowed(message):
-            reply_menu(message.chat.id, format_owner_stats())
-
-    @bot.message_handler(commands=['users'])
-    def owner_bot_users(message):
-        if owner_allowed(message):
-            reply_menu(message.chat.id, format_users_summary())
-
-    @bot.message_handler(commands=['pending'])
-    def owner_bot_pending(message):
-        if owner_allowed(message):
-            reply_menu(message.chat.id, format_pending_summary())
-
-    @bot.message_handler(commands=['processes'])
-    def owner_bot_processes(message):
-        if owner_allowed(message):
-            reply_menu(message.chat.id, format_processes_summary())
-
-    @bot.message_handler(commands=['announcements'])
-    def owner_bot_announcements(message):
-        if owner_allowed(message):
-            reply_menu(message.chat.id, format_announcements_summary())
-
-    @bot.message_handler(commands=['approve'])
-    def owner_bot_approve(message):
-        if not owner_allowed(message):
-            return
-        parts = message.text.split(maxsplit=1)
-        if len(parts) < 2:
-            bot.reply_to(message, "استخدم: <code>/approve اسم_المستخدم</code>")
-            return
-        ok, msg = approve_user_by_bot(parts[1].strip())
-        reply_menu(message.chat.id, msg if ok else f"❌ {msg}")
-
-    @bot.message_handler(commands=['maintenance'])
-    def owner_bot_maintenance(message):
-        if not owner_allowed(message):
-            return
-        parts = message.text.split(maxsplit=2)
-        if len(parts) < 2:
-            bot.reply_to(message, "استخدم: <code>/maintenance on</code> أو <code>/maintenance off</code>")
-            return
-        mode = parts[1].strip().lower()
-        msg = parts[2].strip() if len(parts) > 2 else None
-        if mode not in {'on', 'off'}:
-            bot.reply_to(message, "القيمة يجب أن تكون on أو off.")
-            return
-        maint = set_maintenance_by_bot(mode == 'on', msg)
-        reply_menu(message.chat.id, f"🛠 تم تحديث الصيانة: <b>{'مفعلة' if maint['enabled'] else 'متوقفة'}</b>")
-
-    @bot.message_handler(commands=['announce'])
-    def owner_bot_announce(message):
-        if not owner_allowed(message):
-            return
-        parts = message.text.split(maxsplit=1)
-        ok, msg = add_announcement_by_bot(parts[1] if len(parts) > 1 else '')
-        reply_menu(message.chat.id, msg if ok else f"❌ {msg}")
-
-    @bot.message_handler(commands=['setpanel'])
-    def owner_bot_setpanel(message):
-        if not owner_allowed(message):
-            return
-        parts = message.text.split(maxsplit=1)
-        ok, msg = set_panel_name_by_bot(parts[1] if len(parts) > 1 else '')
-        reply_menu(message.chat.id, msg if ok else f"❌ {msg}")
-
-    @bot.message_handler(commands=['welcome'])
-    def owner_bot_welcome(message):
-        if not owner_allowed(message):
-            return
-        parts = message.text.split(maxsplit=1)
-        ok, msg = set_welcome_by_bot(parts[1] if len(parts) > 1 else '')
-        reply_menu(message.chat.id, msg if ok else f"❌ {msg}")
-
-    @bot.message_handler(commands=['restart'])
-    def owner_bot_restart(message):
-        if not owner_allowed(message):
-            return
-        bot.reply_to(message, "♻️ جارٍ إعادة تشغيل اللوحة...")
-        restart_panel_from_bot()
-
-    @bot.callback_query_handler(func=lambda call: call.data.startswith('ownerbot:'))
-    def owner_bot_callback(call):
-        if not owner_allowed(call):
-            return
-        action = call.data.split(':', 1)[1]
+    def sync_delete_webhook():
         try:
-            if action == 'stats':
-                bot.edit_message_text(format_owner_stats(), call.message.chat.id, call.message.message_id, reply_markup=owner_bot_menu())
-            elif action == 'users':
-                bot.edit_message_text(format_users_summary(), call.message.chat.id, call.message.message_id, reply_markup=owner_bot_menu())
-            elif action == 'pending':
-                bot.edit_message_text(format_pending_summary(), call.message.chat.id, call.message.message_id, reply_markup=owner_bot_menu())
-            elif action == 'processes':
-                bot.edit_message_text(format_processes_summary(), call.message.chat.id, call.message.message_id, reply_markup=owner_bot_menu())
-            elif action == 'announcements':
-                bot.edit_message_text(format_announcements_summary(), call.message.chat.id, call.message.message_id, reply_markup=owner_bot_menu())
-            elif action == 'maint_on':
-                set_maintenance_by_bot(True)
-                bot.edit_message_text("🟢 تم تفعيل وضع الصيانة.", call.message.chat.id, call.message.message_id, reply_markup=owner_bot_menu())
-            elif action == 'maint_off':
-                set_maintenance_by_bot(False)
-                bot.edit_message_text("✅ تم إيقاف وضع الصيانة.", call.message.chat.id, call.message.message_id, reply_markup=owner_bot_menu())
-            elif action == 'restart':
-                bot.edit_message_text("♻️ جارٍ إعادة تشغيل اللوحة...", call.message.chat.id, call.message.message_id, reply_markup=owner_bot_menu())
-                restart_panel_from_bot()
-            bot.answer_callback_query(call.id, "تم")
+            requests.get(f"https://api.telegram.org/bot{cfg['telegram_token']}/deleteWebhook", timeout=10)
         except Exception:
+            pass
+
+    def get_chat_session(chat_id):
+        state = load_bot_state()
+        return state.setdefault('sessions', {}).get(str(chat_id), {})
+
+    def save_chat_session(chat_id, session_data):
+        state = load_bot_state()
+        state.setdefault('sessions', {})[str(chat_id)] = session_data
+        save_bot_state(state)
+
+    def clear_chat_session(chat_id):
+        state = load_bot_state()
+        state.setdefault('sessions', {}).pop(str(chat_id), None)
+        save_bot_state(state)
+
+    def resolve_logged_user(chat_id):
+        if str(chat_id) == str(load_owner_config().get('telegram_owner_id', '')):
+            return MASTER_USERNAME
+        session_data = get_chat_session(chat_id)
+        username_value = session_data.get('username')
+        users = load_users()
+        if username_value in users and session_data.get('logged_in'):
+            return username_value
+        return None
+
+    def push_home(chat_id, message_id=None):
+        username_value = resolve_logged_user(chat_id)
+        if username_value == MASTER_USERNAME:
+            text_value = (
+                "👑 <b>واجهة المالك</b>\n"
+                "يمكنك الآن إدارة المستخدمين والسيرفرات والملفات والإذاعة والسجلات والحماية بالكامل من الأزرار."
+            )
+            markup = owner_bot_menu()
+        elif username_value:
+            text_value = format_user_runtime_stats(username_value)
+            markup = user_bot_menu(username_value)
+        else:
+            text_value = render_public_bot_home()
+            markup = guest_bot_menu()
+        try:
+            if message_id:
+                bot.edit_message_text(text_value, chat_id, message_id, reply_markup=markup)
+            else:
+                bot.send_message(chat_id, text_value, reply_markup=markup)
+        except Exception:
+            bot.send_message(chat_id, text_value, reply_markup=markup)
+
+    def send_pending_user_buttons(chat_id):
+        users = load_users()
+        pending = [(u, d) for u, d in users.items() if not d.get('active')]
+        if not pending:
+            bot.send_message(chat_id, "لا توجد طلبات معلقة حالياً.", reply_markup=owner_bot_menu())
+            return
+        kb = types.InlineKeyboardMarkup(row_width=1)
+        for username_value, info in pending[:20]:
+            label = f"✅ {username_value} (@{info.get('tg_username','-')})"
+            kb.add(types.InlineKeyboardButton(label, callback_data=f"ownerbot:approve:{username_value}"))
+        kb.add(types.InlineKeyboardButton("⬅️ رجوع", callback_data="ownerbot:home"))
+        bot.send_message(chat_id, format_pending_summary(), reply_markup=kb)
+
+    def send_broadcast(mode, text_value, target_username=''):
+        text_value = (text_value or '').strip()
+        if not text_value:
+            return 0
+        users = load_users()
+        sent = 0
+        for username_value, info in users.items():
+            if mode == 'target' and username_value != target_username:
+                continue
+            if mode == 'active' and not info.get('active'):
+                continue
+            chat_id = str(info.get('chat_id') or '').strip()
+            if not chat_id:
+                continue
             try:
-                bot.answer_callback_query(call.id, "تم التحديث")
+                bot.send_message(chat_id, f"📢 <b>إذاعة من الإدارة</b>\n\n{html.escape(text_value)}")
+                sent += 1
             except Exception:
                 pass
+        return sent
+
+    @bot.message_handler(commands=['start'])
+    def owner_bot_start(message):
+        chat_id = message.chat.id
+        if str(chat_id) == str(load_owner_config().get('telegram_owner_id', '')):
+            save_chat_session(chat_id, {'logged_in': True, 'username': MASTER_USERNAME, 'role': 'Owner'})
+        push_home(chat_id)
+
+    @bot.callback_query_handler(func=lambda call: call.data.startswith(('ownerbot:', 'guest:', 'user:', 'review:')))
+    def owner_bot_callback(call):
+        data = call.data
+        chat_id = call.message.chat.id
+        username_value = resolve_logged_user(chat_id)
+        try:
+            if data == 'guest:hosting':
+                bot.edit_message_text(render_public_bot_home(), chat_id, call.message.message_id, reply_markup=guest_bot_menu())
+            elif data == 'guest:status':
+                bot.edit_message_text(format_owner_stats(), chat_id, call.message.message_id, reply_markup=guest_bot_menu())
+            elif data == 'guest:request':
+                bot.send_message(chat_id, f"📨 تم استلام طلبك المبدئي. للتفعيل راسل المالك: @{get_owner_contact()}")
+                send_owner_message(f"📨 طلب سيرفر جديد من Chat ID: <code>{chat_id}</code>")
+            elif data == 'guest:login':
+                save_chat_session(chat_id, {'stage': 'await_username'})
+                bot.send_message(chat_id, "اكتب اسم المستخدم الخاص بك الآن.")
+            elif data == 'user:status' and username_value:
+                bot.edit_message_text(format_user_runtime_stats(username_value), chat_id, call.message.message_id, reply_markup=user_bot_menu(username_value))
+            elif data == 'user:resources' and username_value:
+                bot.edit_message_text(format_user_runtime_stats(username_value), chat_id, call.message.message_id, reply_markup=user_bot_menu(username_value))
+            elif data == 'user:files' and username_value:
+                bot.edit_message_text(format_user_files_summary(username_value), chat_id, call.message.message_id, reply_markup=user_bot_menu(username_value))
+            elif data == 'user:activity' and username_value:
+                bot.edit_message_text("📜 سجلك يعرض من داخل الموقع ويقتصر على عملياتك فقط.", chat_id, call.message.message_id, reply_markup=user_bot_menu(username_value))
+            elif data == 'user:logout':
+                clear_chat_session(chat_id)
+                bot.edit_message_text("🚪 تم تسجيل الخروج من البوت.", chat_id, call.message.message_id, reply_markup=guest_bot_menu())
+            elif data == 'ownerbot:home' and username_value == MASTER_USERNAME:
+                push_home(chat_id, call.message.message_id)
+            elif data == 'ownerbot:stats' and username_value == MASTER_USERNAME:
+                bot.edit_message_text(format_owner_stats(), chat_id, call.message.message_id, reply_markup=owner_bot_menu())
+            elif data == 'ownerbot:users' and username_value == MASTER_USERNAME:
+                bot.edit_message_text(format_users_summary(), chat_id, call.message.message_id, reply_markup=owner_bot_menu())
+            elif data == 'ownerbot:servers' and username_value == MASTER_USERNAME:
+                bot.edit_message_text(format_owner_servers_summary(), chat_id, call.message.message_id, reply_markup=owner_bot_menu())
+            elif data == 'ownerbot:files' and username_value == MASTER_USERNAME:
+                bot.edit_message_text(format_owner_files_summary(), chat_id, call.message.message_id, reply_markup=owner_bot_menu())
+            elif data == 'ownerbot:logs' and username_value == MASTER_USERNAME:
+                bot.edit_message_text(format_owner_logs_summary(), chat_id, call.message.message_id, reply_markup=owner_bot_menu())
+            elif data == 'ownerbot:security' and username_value == MASTER_USERNAME:
+                bot.edit_message_text(format_security_summary(), chat_id, call.message.message_id, reply_markup=owner_bot_menu())
+            elif data == 'ownerbot:pending' and username_value == MASTER_USERNAME:
+                send_pending_user_buttons(chat_id)
+            elif data.startswith('ownerbot:approve:') and username_value == MASTER_USERNAME:
+                ok, msg = approve_user_by_bot(data.split(':', 2)[2])
+                bot.send_message(chat_id, msg if ok else f"❌ {msg}", reply_markup=owner_bot_menu())
+            elif data == 'ownerbot:maint_on' and username_value == MASTER_USERNAME:
+                set_maintenance_by_bot(True)
+                bot.edit_message_text("🟢 تم تفعيل وضع الصيانة.", chat_id, call.message.message_id, reply_markup=owner_bot_menu())
+            elif data == 'ownerbot:maint_off' and username_value == MASTER_USERNAME:
+                set_maintenance_by_bot(False)
+                bot.edit_message_text("✅ تم إيقاف وضع الصيانة.", chat_id, call.message.message_id, reply_markup=owner_bot_menu())
+            elif data == 'ownerbot:botcfg' and username_value == MASTER_USERNAME:
+                state = get_chat_session(chat_id)
+                state['await_owner_token'] = True
+                save_chat_session(chat_id, state)
+                bot.send_message(chat_id, "أرسل التوكن الجديد الآن، وبعده سأطلب منك Owner ID الرقمي.")
+            elif data == 'ownerbot:broadcast_help' and username_value == MASTER_USERNAME:
+                kb = types.InlineKeyboardMarkup(row_width=1)
+                kb.add(types.InlineKeyboardButton("📢 لجميع المستخدمين", callback_data="ownerbot:broadcast_all"))
+                kb.add(types.InlineKeyboardButton("🟢 للمستخدمين النشطين", callback_data="ownerbot:broadcast_active"))
+                kb.add(types.InlineKeyboardButton("👤 لمستخدم محدد", callback_data="ownerbot:broadcast_one"))
+                kb.add(types.InlineKeyboardButton("⬅️ رجوع", callback_data="ownerbot:home"))
+                bot.edit_message_text("اختر نوع الإذاعة.", chat_id, call.message.message_id, reply_markup=kb)
+            elif data in {'ownerbot:broadcast_all', 'ownerbot:broadcast_active', 'ownerbot:broadcast_one'} and username_value == MASTER_USERNAME:
+                state = get_chat_session(chat_id)
+                state['broadcast_mode'] = data.split('_')[-1]
+                state['await_broadcast'] = True
+                save_chat_session(chat_id, state)
+                prompt = "أرسل نص الإذاعة الآن."
+                if state['broadcast_mode'] == 'one':
+                    prompt = "أرسل اسم المستخدم ثم سطر جديد ثم نص الإذاعة."
+                bot.send_message(chat_id, prompt)
+            elif data == 'ownerbot:restart' and username_value == MASTER_USERNAME:
+                bot.edit_message_text("♻️ جارٍ إعادة تشغيل اللوحة...", chat_id, call.message.message_id, reply_markup=owner_bot_menu())
+                restart_panel_from_bot()
+            elif data.startswith('review:') and username_value == MASTER_USERNAME:
+                _, action_name, alert_id = data.split(':', 2)
+                alert = get_security_alert(alert_id)
+                if action_name == 'analysis':
+                    bot.send_message(chat_id, render_security_alert_text(alert), reply_markup=alert_review_keyboard(alert_id))
+                elif action_name == 'download':
+                    if alert and alert.get('file_path') and os.path.exists(alert['file_path']):
+                        with open(alert['file_path'], 'rb') as doc:
+                            bot.send_document(chat_id, doc, visible_file_name=alert.get('filename', 'file'))
+                    else:
+                        bot.send_message(chat_id, "الملف لم يعد موجوداً.")
+                elif action_name in {'approve', 'reject'}:
+                    ok, msg = perform_alert_action(alert_id, action_name, actor=MASTER_USERNAME)
+                    bot.send_message(chat_id, msg if ok else f"❌ {msg}", reply_markup=owner_bot_menu())
+                else:
+                    bot.send_message(chat_id, "إجراء غير معروف.")
+            else:
+                bot.answer_callback_query(call.id, "غير متاح")
+                return
+            bot.answer_callback_query(call.id, "تم")
+        except Exception as exc:
+            BOT_RUNTIME['last_error'] = str(exc)
+            log_activity(MASTER_USERNAME, 'bot.callback.error', str(exc)[:180])
+            try:
+                bot.answer_callback_query(call.id, "حدث خطأ")
+            except Exception:
+                pass
+
+    @bot.message_handler(func=lambda m: True, content_types=['text'])
+    def owner_bot_text_router(message):
+        chat_id = message.chat.id
+        text_value = (message.text or '').strip()
+        state = get_chat_session(chat_id)
+        users = load_users()
+
+        if state.get('await_owner_token') and str(chat_id) == str(load_owner_config().get('telegram_owner_id', '')):
+            state['new_token'] = text_value
+            state.pop('await_owner_token', None)
+            state['await_owner_id'] = True
+            save_chat_session(chat_id, state)
+            bot.send_message(chat_id, "أرسل الآن Owner ID الرقمي فقط.")
+            return
+
+        if state.get('await_owner_id') and str(chat_id) == str(load_owner_config().get('telegram_owner_id', '')):
+            if not text_value.isdigit():
+                bot.send_message(chat_id, "Owner ID يجب أن يكون رقمياً فقط.")
+                return
+            token_value = state.get('new_token', '').strip()
+            if not token_value:
+                bot.send_message(chat_id, "التوكن مفقود. أعد المحاولة من زر تحديث الربط.")
+                return
+            bot_username = _fetch_bot_username(token_value)
+            if not bot_username:
+                bot.send_message(chat_id, "التوكن غير صالح.")
+                return
+            _update_owner_cfg(
+                telegram_token=token_value,
+                telegram_owner_id=text_value,
+                bot_linked=True,
+                bot_username=bot_username
+            )
+            clear_chat_session(chat_id)
+            bot.send_message(chat_id, f"✅ تم تحديث الربط بنجاح إلى @{bot_username}")
+            return
+
+        if state.get('await_broadcast') and str(chat_id) == str(load_owner_config().get('telegram_owner_id', '')):
+            mode = state.get('broadcast_mode', 'all')
+            target_username = ''
+            message_body = text_value
+            if mode == 'one':
+                parts = text_value.splitlines()
+                if len(parts) < 2:
+                    bot.send_message(chat_id, "أرسل اسم المستخدم في السطر الأول ثم نص الإذاعة في بقية الرسالة.")
+                    return
+                target_username = parts[0].strip()
+                message_body = '\n'.join(parts[1:]).strip()
+            count = send_broadcast(mode if mode in {'all', 'active'} else 'target', message_body, target_username)
+            clear_chat_session(chat_id)
+            bot.send_message(chat_id, f"📢 تم الإرسال إلى <b>{count}</b> مستخدم.", reply_markup=owner_bot_menu())
+            return
+
+        if state.get('stage') == 'await_username':
+            if text_value not in users:
+                bot.send_message(chat_id, f"هذا الحساب غير موجود. تواصل مع المالك @{get_owner_contact()}", reply_markup=guest_bot_menu())
+                clear_chat_session(chat_id)
+                return
+            state['username'] = text_value
+            state['stage'] = 'await_password'
+            save_chat_session(chat_id, state)
+            bot.send_message(chat_id, "اكتب كلمة المرور الآن.")
+            return
+
+        if state.get('stage') == 'await_password':
+            username_value = state.get('username', '')
+            user_data = users.get(username_value, {})
+            if not user_data:
+                clear_chat_session(chat_id)
+                bot.send_message(chat_id, "انتهت الجلسة. ابدأ من جديد.")
+                return
+            if user_data.get('password') != hashlib.sha256(text_value.encode()).hexdigest():
+                bot.send_message(chat_id, "❌ كلمة المرور غير صحيحة.")
+                return
+            if not user_data.get('active', False):
+                bot.send_message(chat_id, f"حسابك بانتظار موافقة المالك @{get_owner_contact()}.")
+                clear_chat_session(chat_id)
+                return
+            user_data['chat_id'] = str(chat_id)
+            users[username_value] = user_data
+            save_users(users)
+            save_chat_session(chat_id, {
+                'logged_in': True,
+                'username': username_value,
+                'role': get_user_role(username_value)
+            })
+            bot.send_message(chat_id, "✅ تم تسجيل الدخول بنجاح.", reply_markup=user_bot_menu(username_value))
+            bot.send_message(chat_id, format_user_runtime_stats(username_value), reply_markup=user_bot_menu(username_value))
+            return
+
+        if str(chat_id) == str(load_owner_config().get('telegram_owner_id', '')):
+            save_chat_session(chat_id, {'logged_in': True, 'username': MASTER_USERNAME, 'role': 'Owner'})
+            push_home(chat_id)
+            return
+
+        if not resolve_logged_user(chat_id):
+            bot.send_message(chat_id, "استخدم الأزرار فقط. إذا كان لديك حساب اضغط `تسجيل الدخول`.", reply_markup=guest_bot_menu())
+            return
+        push_home(chat_id)
 
     def runner():
         BOT_RUNTIME['running'] = True
         BOT_RUNTIME['started_at'] = datetime.now().isoformat()
         BOT_RUNTIME['last_error'] = ''
         BOT_RUNTIME['last_action'] = 'start'
+        clean_previous_bot_processes()
+        sync_delete_webhook()
         try:
-            send_owner_message("✅ تم تشغيل بوت التحكم الخاص بالموقع.", reply_markup=owner_bot_menu())
+            send_owner_message("✅ تم تشغيل بوت التحكم الخاص بالموقع بالأزرار التفاعلية.", reply_markup=owner_bot_menu())
         except Exception:
             pass
         try:
@@ -627,6 +1155,7 @@ def start_telegram_owner_bot():
         except Exception as exc:
             BOT_RUNTIME['last_error'] = str(exc)
             BOT_RUNTIME['running'] = False
+            log_activity(MASTER_USERNAME, 'bot.runtime.error', str(exc)[:200])
         finally:
             BOT_RUNTIME['running'] = False
 
@@ -651,9 +1180,81 @@ else:
 app.permanent_session_lifetime = timedelta(days=30)
 app.config['MAX_CONTENT_LENGTH'] = None
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['SESSION_COOKIE_SECURE'] = False
+
+def load_login_attempts():
+    return load_json_file(LOGIN_ATTEMPTS_FILE, {'ips': {}})
+
+def save_login_attempts(data):
+    save_json_file(LOGIN_ATTEMPTS_FILE, data)
+
+def load_ip_bans():
+    return load_json_file(IP_BANS_FILE, {'ips': {}})
+
+def save_ip_bans(data):
+    save_json_file(IP_BANS_FILE, data)
+
+def is_ip_banned(ip_addr=None):
+    ip_addr = ip_addr or get_request_ip()
+    bans = load_ip_bans().get('ips', {})
+    info = bans.get(ip_addr)
+    if not info:
+        return False
+    try:
+        until = datetime.fromisoformat(info.get('until'))
+        if until > datetime.now():
+            return True
+    except Exception:
+        return False
+    bans.pop(ip_addr, None)
+    save_ip_bans({'ips': bans})
+    return False
+
+def register_failed_attempt(ip_addr, reason=''):
+    ip_addr = ip_addr or get_request_ip()
+    attempts_data = load_login_attempts()
+    ip_data = attempts_data.setdefault('ips', {}).setdefault(ip_addr, {'count': 0, 'last': None})
+    ip_data['count'] = int(ip_data.get('count', 0)) + 1
+    ip_data['last'] = datetime.now().isoformat()
+    save_login_attempts(attempts_data)
+    if ip_data['count'] >= 8:
+        bans = load_ip_bans()
+        bans.setdefault('ips', {})[ip_addr] = {
+            'reason': reason or 'too_many_attempts',
+            'until': (datetime.now() + timedelta(minutes=30)).isoformat()
+        }
+        save_ip_bans(bans)
+        log_activity('security', 'ip.auto_ban', f'{ip_addr} | {reason}')
+
+def clear_failed_attempts(ip_addr):
+    attempts_data = load_login_attempts()
+    attempts_data.setdefault('ips', {}).pop(ip_addr, None)
+    save_login_attempts(attempts_data)
+
+def enforce_rate_limit(bucket, limit_count=20, window_seconds=60):
+    ip_addr = get_request_ip()
+    attempts_data = load_login_attempts()
+    key = f'{bucket}:{ip_addr}'
+    info = attempts_data.setdefault('ips', {}).setdefault(key, {'count': 0, 'started_at': datetime.now().isoformat()})
+    started_at = datetime.fromisoformat(info.get('started_at', datetime.now().isoformat()))
+    if (datetime.now() - started_at).total_seconds() > window_seconds:
+        info['count'] = 0
+        info['started_at'] = datetime.now().isoformat()
+    info['count'] = int(info.get('count', 0)) + 1
+    save_login_attempts(attempts_data)
+    return info['count'] <= limit_count
 
 @app.before_request
 def check_maintenance():
+    ip_addr = get_request_ip()
+    if is_ip_banned(ip_addr):
+        return jsonify({'success': False, 'error': 'IP blocked temporarily'}) if request.path.startswith('/api/') else ("IP blocked temporarily", 403)
+    if request.path.startswith('/api/') and not enforce_rate_limit('api', limit_count=80, window_seconds=60):
+        log_activity('security', 'rate_limit.hit', ip_addr)
+        return jsonify({'success': False, 'error': 'Rate limit exceeded'}), 429
+    session.setdefault('csrf_token', session.get('csrf_token') or secrets.token_hex(24))
     maint = load_maintenance()
     if not maint.get('enabled'):
         return None
@@ -717,6 +1318,30 @@ def _kv_set(key, value):
         return False
 
 def load_users():
+    def normalize(data):
+        changed = False
+        if not isinstance(data, dict):
+            return {}
+        for username, info in list(data.items()):
+            if not isinstance(info, dict):
+                data[username] = {}
+                info = data[username]
+                changed = True
+            for key, value in {
+                'role': 'Owner' if username == MASTER_USERNAME else 'User',
+                'chat_id': '',
+                'tg_username': '',
+                'max_sessions': 1,
+                'max_servers': 1,
+                'main_file': 'main.py',
+                'active': False if username != MASTER_USERNAME else True
+            }.items():
+                if key not in info:
+                    info[key] = value
+                    changed = True
+        if changed:
+            save_json_file(USERS_FILE, data)
+        return data
     if _REPLIT_DB_URL:
         raw = _kv_get(_KV_USERS_KEY)
         if raw:
@@ -724,10 +1349,10 @@ def load_users():
                 d = json.loads(raw)
                 if isinstance(d, dict):
                     save_json_file(USERS_FILE, d)
-                    return d
+                    return normalize(d)
             except Exception:
                 pass
-    return load_json_file(USERS_FILE, {})
+    return normalize(load_json_file(USERS_FILE, {}))
 
 def save_users(u):
     if not isinstance(u, dict): return
@@ -766,6 +1391,12 @@ def is_path_allowed(username, path):
         base = os.path.realpath(get_user_path(username))
         target = os.path.realpath(str(path))
         return target.startswith(base)
+    except Exception:
+        return False
+
+def is_quarantine_path(username, path):
+    try:
+        return os.path.realpath(str(path)).startswith(os.path.realpath(get_quarantine_dir(username)))
     except Exception:
         return False
 
@@ -4163,7 +4794,7 @@ async function toggleMaintenance(){
 }
 
 async function saveMaintMsg(){
-  toast('غيّر رسالة الصيانة من البوت عبر /maintenance on رسالتك', true, true);
+  toast('غيّر رسالة الصيانة من أزرار بوت تيليجرام الخاص بالمالك', true, true);
 }
 
 async function linkBot(){
@@ -4560,6 +5191,37 @@ statsInterval = setInterval(loadStats, 5000);
 </body></html>
 '''
 
+OWNER_2FA_TEMPLATE = r'''
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>تحقق المالك</title>
+<style>
+body{margin:0;font-family:Inter,Segoe UI,sans-serif;background:#070b12;color:#fff;display:flex;align-items:center;justify-content:center;min-height:100vh;background-image:radial-gradient(circle at top,#172033 0,#070b12 60%)}
+.card{width:min(92vw,420px);background:#101826;border:1px solid #22304a;border-radius:18px;padding:28px;box-shadow:0 30px 80px rgba(0,0,0,.45)}
+h1{margin:0 0 10px;font-size:24px}.muted{color:#96a2bb;line-height:1.8;font-size:14px}
+input{width:100%;margin-top:16px;background:#0b1320;border:1px solid #2b3b59;border-radius:12px;color:#fff;padding:14px;font-size:16px}
+button{width:100%;margin-top:16px;padding:14px;border:0;border-radius:12px;background:linear-gradient(135deg,#5b8cff,#7c5cfc);color:#fff;font-weight:700;cursor:pointer}
+.err{margin-top:14px;color:#ff8f8f}.ok{margin-top:14px;color:#7df0b5}
+a{color:#8fb2ff;text-decoration:none}
+</style>
+</head>
+<body>
+<form class="card" method="post">
+  <h1>تحقق المالك</h1>
+  <div class="muted">تم إرسال رمز تحقق إلى تيليجرام المالك. أدخله هنا لإكمال تسجيل الدخول للوحة.</div>
+  <input type="text" name="otp" placeholder="رمز التحقق" autocomplete="one-time-code" required>
+  {% if error %}<div class="err">{{ error }}</div>{% endif %}
+  {% if ok %}<div class="ok">{{ ok }}</div>{% endif %}
+  <button type="submit">تأكيد</button>
+  <div class="muted" style="margin-top:14px"><a href="/login">العودة لتسجيل الدخول</a></div>
+</form>
+</body>
+</html>
+'''
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  20.  Flask Routes
 # ─────────────────────────────────────────────────────────────────────────────
@@ -4576,14 +5238,39 @@ def index():
 def login_page():
     if request.method == 'GET':
         return render_template_string(AUTH_TEMPLATE, error=None, error_type=None)
+    ip_addr = get_request_ip()
+    if is_ip_banned(ip_addr):
+        return render_template_string(AUTH_TEMPLATE, error='❌ تم حظر هذا الـ IP مؤقتاً بسبب كثرة المحاولات', error_type='login')
     username = request.form.get('username','').strip()
     password = request.form.get('password','')
     h = hashlib.sha256(password.encode()).hexdigest()
     
     if username == MASTER_USERNAME and h == MASTER_PASSWORD_HASH:
+        if load_owner_config().get('owner_two_factor', True) and owner_bot_ready():
+            otp = ''.join(random.choice(string.digits) for _ in range(6))
+            state = load_bot_state()
+            state.setdefault('owner_2fa', {})[ip_addr] = {
+                'code': otp,
+                'expires_at': (datetime.now() + timedelta(minutes=5)).isoformat(),
+                'username': username
+            }
+            save_bot_state(state)
+            send_owner_message(
+                "🔐 <b>رمز تحقق دخول المالك</b>\n"
+                f"• الرمز: <code>{otp}</code>\n"
+                f"• IP: <code>{html.escape(ip_addr)}</code>\n"
+                "مدة الصلاحية: 5 دقائق."
+            )
+            session['pending_owner_2fa'] = True
+            session['pending_owner_ip'] = ip_addr
+            session['pending_owner_username'] = username
+            log_activity(username, 'auth.login.2fa.sent', ip_addr)
+            return redirect('/owner-2fa')
         session.permanent = True
         session['logged_in'] = True
         session['username'] = username
+        session['login_nonce'] = secrets.token_hex(16)
+        clear_failed_attempts(ip_addr)
         register_session(username)
         log_activity(username, 'auth.login', 'Master login')
         return redirect('/')
@@ -4593,23 +5280,62 @@ def login_page():
         if not users[username].get('active', False):
             log_activity(username, 'auth.login.denied', 'Pending approval')
             return render_template_string(AUTH_TEMPLATE,
-                error='⚠️ Your account is pending Admin approval. Contact SHBH_S1',
+                error=f'⚠️ حسابك بانتظار الموافقة. تواصل مع @{get_owner_contact()}',
                 error_type='login')
         if can_user_login(username):
             session.permanent = True
             session['logged_in'] = True
             session['username'] = username
+            session['login_nonce'] = secrets.token_hex(16)
             register_session(username)
+            clear_failed_attempts(ip_addr)
             ensure_user_folder(username)
             log_activity(username, 'auth.login', 'User login')
             return redirect('/')
         else:
             return render_template_string(AUTH_TEMPLATE,
-                error='❌ Session limit reached or account expired.',
+                error='❌ تم بلوغ حد الجلسات أو انتهت صلاحية الحساب.',
                 error_type='login')
     
+    register_failed_attempt(ip_addr, f'login_failed:{username or "-"}')
     log_activity(username or '-', 'auth.login.failed', 'Invalid credentials')
-    return render_template_string(AUTH_TEMPLATE, error='❌ Invalid credentials', error_type='login')
+    return render_template_string(AUTH_TEMPLATE, error='❌ بيانات الدخول غير صحيحة', error_type='login')
+
+@app.route('/owner-2fa', methods=['GET', 'POST'])
+def owner_2fa_page():
+    if not session.get('pending_owner_2fa'):
+        return redirect('/login')
+    if request.method == 'GET':
+        return render_template_string(OWNER_2FA_TEMPLATE, error=None, ok=None)
+    otp = (request.form.get('otp') or '').strip()
+    ip_addr = session.get('pending_owner_ip') or get_request_ip()
+    state = load_bot_state()
+    entry = state.setdefault('owner_2fa', {}).get(ip_addr)
+    if not entry:
+        return render_template_string(OWNER_2FA_TEMPLATE, error='انتهت صلاحية الرمز. أعد تسجيل الدخول.', ok=None)
+    try:
+        if datetime.fromisoformat(entry.get('expires_at')) < datetime.now():
+            state['owner_2fa'].pop(ip_addr, None)
+            save_bot_state(state)
+            return render_template_string(OWNER_2FA_TEMPLATE, error='انتهت صلاحية الرمز. أعد تسجيل الدخول.', ok=None)
+    except Exception:
+        pass
+    if otp != str(entry.get('code')):
+        register_failed_attempt(ip_addr, 'owner_2fa_failed')
+        return render_template_string(OWNER_2FA_TEMPLATE, error='رمز التحقق غير صحيح.', ok=None)
+    session.permanent = True
+    session['logged_in'] = True
+    session['username'] = MASTER_USERNAME
+    session['login_nonce'] = secrets.token_hex(16)
+    session.pop('pending_owner_2fa', None)
+    session.pop('pending_owner_ip', None)
+    session.pop('pending_owner_username', None)
+    state['owner_2fa'].pop(ip_addr, None)
+    save_bot_state(state)
+    clear_failed_attempts(ip_addr)
+    register_session(MASTER_USERNAME)
+    log_activity(MASTER_USERNAME, 'auth.login', 'Master login with Telegram 2FA')
+    return redirect('/')
 
 @app.route('/register', methods=['POST'])
 def register_page():
@@ -4640,6 +5366,8 @@ def register_page():
     users[username] = {
         'password':     hashlib.sha256(password.encode()).hexdigest(),
         'tg_username':  tg_username,
+        'chat_id':      '',
+        'role':         'User',
         'max_sessions': 1,
         'max_servers':  1,
         'main_file':    'main.py',
@@ -4656,7 +5384,7 @@ def register_page():
         "🆕 <b>طلب تسجيل جديد</b>\n"
         f"• المستخدم: <b>{html.escape(username)}</b>\n"
         f"• تيليجرام: @{html.escape(tg_username)}\n"
-        "للموافقة استخدم: /approve " + html.escape(username)
+        "راجع الطلب من أزرار الإدارة داخل البوت."
     )
     return render_template_string(AUTH_TEMPLATE,
         error=f'✅ تم إرسال طلب التسجيل! انتظر موافقة الأدمن.\nيوزر تيليجرامك: @{tg_username}',
@@ -4676,22 +5404,21 @@ def logout():
 def get_profile():
     u = session['username']
     p = get_user_path(u)
-    size = 0
-    if os.path.exists(p):
-        for r,d,f in os.walk(p):
-            for fl in f:
-                fp = os.path.join(r,fl)
-                if os.path.exists(fp):
-                    size += os.path.getsize(fp)
     users = load_users()
     ud = users.get(u, {})
+    runtime = get_user_runtime_stats(u)
     return jsonify({
         'username': u,
         'is_master': u == MASTER_USERNAME,
+        'role': get_user_role(u),
         'user_path': p,
         'created': ud.get('created','') if isinstance(ud,dict) else '',
         'expiry': ud.get('expiry','∞') if isinstance(ud,dict) else '∞',
-        'disk_usage_gb': size / (1024**3)
+        'disk_usage_gb': runtime['storage_gb'],
+        'ram_mb': runtime['ram_mb'],
+        'cpu_percent': runtime['cpu_percent'],
+        'active_processes': runtime['active_processes'],
+        'active_process_count': len(runtime['active_processes'])
     })
 
 @app.route('/api/system')
@@ -4747,6 +5474,8 @@ def list_files_api():
     files = []
     try:
         for n in sorted(os.listdir(p), key=lambda x:(not os.path.isdir(os.path.join(p,x)),x.lower())):
+            if session['username'] != MASTER_USERNAME and n.startswith('.quarantine'):
+                continue
             fp = os.path.join(p,n)
             files.append({'name':n,'is_dir':os.path.isdir(fp),
                           'size':f"{os.path.getsize(fp)//1024} KB" if os.path.isfile(fp) else ''})
@@ -4767,56 +5496,40 @@ def upload_file_api():
         filename = secure_filename(f.filename) if f.filename else 'uploaded_file'
         if not filename: filename = 'uploaded_file'
         ext = os.path.splitext(filename)[1].lower().lstrip('.')
-        # Block dangerous extensions
-        if ext in BLOCKED_EXTENSIONS:
-            log_activity(session['username'], 'security.blocked_ext', filename)
-            return jsonify({'success':False,'error':f'❌ نوع الملف .{ext} محظور لأسباب أمنية'}), 403
         os.makedirs(p, exist_ok=True)
         sp = os.path.join(p, filename)
         f.save(sp)
-        # Deep content scan
         threats = scan_file_content(sp)
+        if ext in BLOCKED_EXTENSIONS:
+            threats = [f'امتداد محظور: .{ext}'] + threats
         if threats:
-            os.remove(sp)
-            threat_list = ' | '.join(threats[:5])
-            log_activity(session['username'], 'security.malware_blocked', f'{filename}: {threat_list}')
-
-            # ── حفظ التنبيه في قاعدة بيانات لوحة الأدمن ──
+            qdir = get_quarantine_dir(session['username'])
+            quarantined_name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{filename}"
+            qpath = os.path.join(qdir, quarantined_name)
+            shutil.move(sp, qpath)
+            users_data = load_users()
+            ud = users_data.get(session['username'], {})
+            tg_user = ud.get('tg_username', 'غير معروف') if isinstance(ud, dict) else 'غير معروف'
             alert_rec = save_security_alert(
                 username=session['username'],
                 filename=filename,
-                threats=threats[:5],
-                ip=request.remote_addr
+                threats=threats[:8],
+                ip=get_request_ip(),
+                file_path=qpath,
+                original_path=sp,
+                tg_username=tg_user,
+                chat_id=ud.get('chat_id', '') if isinstance(ud, dict) else ''
             )
-
-            # ── إشعار الأدمن عبر تيليجرام ──
-            try:
-                users_data = load_users()
-                ud = users_data.get(session['username'], {})
-                tg_user = ud.get('tg_username', 'غير معروف') if isinstance(ud, dict) else 'غير معروف'
-                cfg = load_owner_config()
-                if cfg.get('bot_linked') and cfg.get('telegram_token') and cfg.get('telegram_owner_id'):
-                    threats_fmt = '\n'.join(f'   • {t}' for t in threats[:5])
-                    alert_msg = (
-                        f"🚨 *تحذير أمني — محاولة رفع ملف خطير!*\n"
-                        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                        f"👤 *اليوزر:* `{session['username']}`\n"
-                        f"📱 *تيليجرام:* `@{tg_user}`\n"
-                        f"📄 *الملف:* `{filename}`\n"
-                        f"🌐 *IP:* `{request.remote_addr}`\n"
-                        f"🕐 *الوقت:* `{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`\n\n"
-                        f"🔍 *التهديدات المكتشفة:*\n{threats_fmt}\n\n"
-                        f"⚠️ تم حذف الملف تلقائياً — راجع قسم الأمن في لوحة التحكم."
-                    )
-                    requests.post(
-                        f"https://api.telegram.org/bot{cfg['telegram_token']}/sendMessage",
-                        json={'chat_id': cfg['telegram_owner_id'], 'text': alert_msg,
-                              'parse_mode': 'Markdown'},
-                        timeout=8
-                    )
-            except Exception:
-                pass
-            return jsonify({'success': False, 'error': 'SECURITY_ALERT|' + threat_list}), 403
+            update_security_alert(alert_rec['id'], sandbox_status='static_analysis_only')
+            send_security_alert_to_owner(get_security_alert(alert_rec['id']))
+            threat_list = ' | '.join(threats[:5])
+            log_activity(session['username'], 'security.file_in_review', f'{filename}: {threat_list}')
+            return jsonify({
+                'success': True,
+                'pending_review': True,
+                'filename': filename,
+                'message': 'تم تحويل الملف إلى قائمة المراجعة وإرسال إشعار للمالك.'
+            })
         log_activity(session['username'], 'file.upload', filename)
         return jsonify({'success':True,'filename':filename})
     except Exception as e:
@@ -4848,7 +5561,7 @@ def create_file_api():
 def delete_file_api():
     d = request.json or {}
     p = d.get('path','')
-    if not is_path_allowed(session['username'], p):
+    if not is_path_allowed(session['username'], p) or (session['username'] != MASTER_USERNAME and is_quarantine_path(session['username'], p)):
         return jsonify({'success':False}), 403
     if os.path.isdir(p): shutil.rmtree(p, ignore_errors=True)
     elif os.path.isfile(p): os.remove(p)
@@ -4859,7 +5572,7 @@ def delete_file_api():
 @login_required
 def get_file_content():
     p = request.args.get('path')
-    if not p or not is_path_allowed(session['username'], p):
+    if not p or not is_path_allowed(session['username'], p) or (session['username'] != MASTER_USERNAME and is_quarantine_path(session['username'], p)):
         return jsonify({'success':False}), 403
     try:
         with open(p,'r',encoding='utf-8',errors='ignore') as f:
@@ -4871,7 +5584,7 @@ def get_file_content():
 @login_required
 def save_file_api():
     d = request.json or {}
-    if not is_path_allowed(session['username'], d.get('path','')):
+    if not is_path_allowed(session['username'], d.get('path','')) or (session['username'] != MASTER_USERNAME and is_quarantine_path(session['username'], d.get('path',''))):
         return jsonify({'success':False}), 403
     with open(d['path'],'w',encoding='utf-8') as f:
         f.write(d.get('content',''))
@@ -4919,6 +5632,10 @@ def run_file_api():
         return jsonify({'success':False,'error':'File not found'})
     if not is_path_allowed(session['username'], d.get('path','')):
         return jsonify({'success':False,'error':'Forbidden'})
+    alerts = load_security_alerts().get('alerts', [])
+    for alert in alerts:
+        if alert.get('username') == session['username'] and alert.get('original_path') == filepath and alert.get('status') == 'pending':
+            return jsonify({'success':False,'error':'الملف قيد المراجعة الأمنية ولا يمكن تشغيله قبل موافقة المالك'})
     if d.get('filename','').lower().endswith('.zip'):
         extract_dir = os.path.join(d['path'], d['filename'].replace('.zip',''))
         os.makedirs(extract_dir, exist_ok=True)
@@ -4946,6 +5663,8 @@ def run_file_api():
 def stop_file_api():
     pid = (request.json or {}).get('process_id')
     if pid in file_processes:
+        if session['username'] != MASTER_USERNAME and file_processes[pid].get('username') != session['username']:
+            return jsonify({'success':False,'error':'Forbidden'}), 403
         try:
             if hasattr(os,'killpg'): os.killpg(os.getpgid(file_processes[pid]['process'].pid), signal.SIGKILL)
             else: file_processes[pid]['process'].kill()
@@ -4959,6 +5678,8 @@ def stop_file_api():
 def get_file_output_api(pid):
     if pid in file_processes:
         info = file_processes[pid]
+        if session['username'] != MASTER_USERNAME and info.get('username') != session['username']:
+            return jsonify({'success':False,'output':[],'is_running':False}), 403
         out = list(info.get('output',[]))
         info['output'].clear()
         return jsonify({'success':True,'output':out,'is_running':info['process'].poll() is None})
@@ -4968,6 +5689,8 @@ def get_file_output_api(pid):
 @login_required
 def clear_file_output(pid):
     if pid in file_processes:
+        if session['username'] != MASTER_USERNAME and file_processes[pid].get('username') != session['username']:
+            return jsonify({'success':False,'error':'Forbidden'}), 403
         file_processes[pid]['output'].clear()
     return jsonify({'success':True})
 
@@ -4977,6 +5700,8 @@ def send_file_input_api():
     d = request.json or {}
     pid = d.get('process_id')
     if pid in file_processes:
+        if session['username'] != MASTER_USERNAME and file_processes[pid].get('username') != session['username']:
+            return jsonify({'success':False,'error':'Forbidden'}), 403
         try:
             file_processes[pid]['process'].stdin.write(d.get('input','')+'\n')
             file_processes[pid]['process'].stdin.flush()
@@ -5007,6 +5732,8 @@ def execute_command_api():
     cwd = d.get('cwd', get_user_path(session['username']))
     if not cmd:
         return jsonify({'output':'','success':True})
+    if not is_path_allowed(session['username'], cwd) or (session['username'] != MASTER_USERNAME and is_quarantine_path(session['username'], cwd)):
+        return jsonify({'output':'🚫 المسار غير مسموح', 'success':False}), 403
 
     # ── Smart command rewriting ──
     # normalize python/pip to python3/pip3
@@ -5093,6 +5820,8 @@ def nodejs_info_api():
 def nodejs_stop_api():
     pid = (request.json or {}).get('pid')
     if pid in nodejs_processes:
+        if session['username'] != MASTER_USERNAME and nodejs_processes[pid].get('username') != session['username']:
+            return jsonify({'success':False,'error':'Forbidden'}), 403
         try:
             p = nodejs_processes[pid]['process']
             if hasattr(os,'killpg'): os.killpg(os.getpgid(p.pid), signal.SIGKILL)
@@ -5126,6 +5855,8 @@ def nodejs_list_api():
 @login_required
 def nodejs_logs_api(pid):
     if pid in nodejs_processes:
+        if session['username'] != MASTER_USERNAME and nodejs_processes[pid].get('username') != session['username']:
+            return jsonify({'output':[]}), 403
         return jsonify({'output':list(nodejs_processes[pid].get('output',[]))})
     return jsonify({'output':[]})
 
@@ -5175,6 +5906,8 @@ def php_info_api():
 def php_stop_api():
     pid = (request.json or {}).get('pid')
     if pid in _php_servers:
+        if session['username'] != MASTER_USERNAME and _php_servers[pid].get('username') != session['username']:
+            return jsonify({'success':False,'error':'Forbidden'}), 403
         try:
             p = _php_servers[pid]['process']
             if hasattr(os,'killpg'): os.killpg(os.getpgid(p.pid), signal.SIGKILL)
@@ -5202,14 +5935,22 @@ def php_list_api():
 @login_required
 def start_process_api():
     d = request.json or {}
+    cwd = d.get('cwd', get_user_path(session['username']))
+    if not is_path_allowed(session['username'], cwd):
+        return jsonify({'success':False,'error':'Forbidden'}), 403
+    owner_username = session['username']
+    proc_name = d.get('name', f'proc_{int(time.time())}')
+    command = d.get('command', '')
+    if not command:
+        return jsonify({'success':False,'error':'No command'}), 400
     def run():
-        kwargs = dict(shell=True, cwd=d.get('cwd', BASE_PATH))
+        kwargs = dict(shell=True, cwd=cwd)
         if hasattr(os,'setsid'): kwargs['preexec_fn']=os.setsid
-        p = subprocess.Popen(d['command'], **kwargs)
-        running_processes[d['name']] = {'process':p,'owner':session.get('username'),'command':d['command']}
+        p = subprocess.Popen(command, **kwargs)
+        running_processes[proc_name] = {'process':p,'owner':owner_username,'command':command}
         p.wait()
     threading.Thread(target=run,daemon=True).start()
-    log_activity(session['username'],'process.start',d.get('name',''))
+    log_activity(owner_username,'process.start',proc_name)
     return jsonify({'success':True})
 
 @app.route('/api/process/stop', methods=['POST'])
@@ -5217,6 +5958,8 @@ def start_process_api():
 def stop_process_api():
     n = (request.json or {}).get('name','')
     if n in running_processes:
+        if session['username'] != MASTER_USERNAME and running_processes[n].get('owner') != session['username']:
+            return jsonify({'success':False,'error':'Forbidden'}), 403
         try:
             if hasattr(os,'killpg'): os.killpg(os.getpgid(running_processes[n]['process'].pid), signal.SIGKILL)
             else: running_processes[n]['process'].kill()
@@ -5230,6 +5973,8 @@ def stop_process_api():
 def list_processes_api():
     procs = {}
     for n,i in running_processes.items():
+        if session['username'] != MASTER_USERNAME and i.get('owner') != session['username']:
+            continue
         procs[n]={'status':'running' if i['process'].poll() is None else 'stopped','command':i['command']}
     return jsonify(procs)
 
@@ -5298,6 +6043,8 @@ def list_panel_users_api():
             'active':          ud.get('active', True),
             'created':         ud.get('created', ''),
             'plan':            ud.get('plan', 'free_trial'),
+            'role':            ud.get('role', 'User'),
+            'chat_id':         ud.get('chat_id', ''),
         })
     return jsonify({'users': result})
 
@@ -5339,6 +6086,8 @@ def add_panel_user_api():
     users[uname] = {
         'password':     hashlib.sha256(d.get('password','').encode()).hexdigest(),
         'tg_username':  d.get('tg_username','').lstrip('@'),
+        'chat_id':      str(d.get('chat_id','')).strip(),
+        'role':         d.get('role', 'User'),
         'max_sessions': int(d.get('max_sessions', 1)),
         'max_servers':  int(d.get('max_servers', 1)),
         'main_file':    d.get('main_file', 'main.py'),
@@ -5363,6 +6112,8 @@ def update_panel_user_api():
     if d.get('max_servers') is not None: users[uname]['max_servers'] = int(d['max_servers'])
     if d.get('main_file') is not None: users[uname]['main_file'] = d['main_file']
     if d.get('max_sessions') is not None: users[uname]['max_sessions'] = int(d['max_sessions'])
+    if d.get('role') is not None: users[uname]['role'] = d['role']
+    if d.get('chat_id') is not None: users[uname]['chat_id'] = str(d['chat_id']).strip()
     if d.get('expiry_days') is not None:
         expiry_days = max(30, int(d['expiry_days'] or 30))
         users[uname]['expiry'] = (datetime.now() + timedelta(days=expiry_days)).isoformat()
@@ -5569,7 +6320,7 @@ def owner_config_get():
 @app.route('/api/owner/config/save', methods=['POST'])
 @master_required
 def owner_config_save():
-    return jsonify({'success':False,'error':'Owner settings are controlled from Telegram bot only'}), 403
+    return jsonify({'success':False,'error':'استخدم قسم ربط البوت داخل الموقع لتغيير التوكن وOwner ID'}), 403
 
 @app.route('/api/owner/maintenance', methods=['GET','POST'])
 @login_required
@@ -5608,6 +6359,8 @@ def owner_bot_link():
     owner_id = d.get('owner_id','').strip()
     if not token or not owner_id:
         return jsonify({'success':False,'error':'Token and owner ID required'})
+    if not owner_id.isdigit():
+        return jsonify({'success':False,'error':'Owner ID must be numeric only'})
     try:
         bot_username = _fetch_bot_username(token)
         if not bot_username:
@@ -5773,15 +6526,26 @@ def owner_broadcast():
     d = request.json or {}
     msg = d.get('message','').strip()
     if not msg: return jsonify({'success':False,'error':'Empty message'})
-    cfg = load_owner_config()
     count = 0
-    if cfg.get('bot_linked') and cfg.get('telegram_token'):
-        token = cfg['telegram_token']
+    for username_value, info in load_users().items():
+        if not info.get('active'):
+            continue
+        chat_id = str(info.get('chat_id') or '').strip()
+        if not chat_id:
+            continue
         try:
-            requests.post(f'https://api.telegram.org/bot{token}/sendMessage',
-                          json={'chat_id':cfg['telegram_owner_id'],'text':f'📡 Broadcast:\n{msg}'}, timeout=10)
+            if TELEGRAM_BOT and BOT_RUNTIME.get('running'):
+                TELEGRAM_BOT.send_message(chat_id, f"📢 <b>إذاعة من الإدارة</b>\n\n{html.escape(msg)}")
+            else:
+                cfg = load_owner_config()
+                requests.post(
+                    f"https://api.telegram.org/bot{cfg['telegram_token']}/sendMessage",
+                    json={'chat_id': chat_id, 'text': f"📢 إذاعة من الإدارة\n\n{msg}"},
+                    timeout=10
+                )
             count += 1
-        except Exception: pass
+        except Exception:
+            pass
     data = load_announcements()
     data['list'].insert(0,{'text':f'[BROADCAST] {msg}','time':datetime.now().strftime('%Y-%m-%d %H:%M')})
     save_announcements(data)
@@ -5821,14 +6585,13 @@ def get_security_alerts_api():
 @master_required
 def review_security_alert_api():
     alert_id = (request.json or {}).get('id','')
-    data = load_security_alerts()
-    for a in data.get('alerts',[]):
-        if a.get('id') == alert_id:
-            a['reviewed'] = True
-            break
-    save_json_file(SECURITY_ALERTS_FILE, data)
+    action_name = (request.json or {}).get('action', 'review').strip().lower()
+    if action_name in {'approve', 'reject'}:
+        ok, msg = perform_alert_action(alert_id, action_name, actor=session['username'])
+        return jsonify({'success': ok, 'message': msg})
+    alert = update_security_alert(alert_id, reviewed=True)
     log_activity(session['username'], 'security.alert.reviewed', alert_id)
-    return jsonify({'success': True})
+    return jsonify({'success': bool(alert)})
 
 @app.route('/api/security/alerts/delete', methods=['POST'])
 @master_required
