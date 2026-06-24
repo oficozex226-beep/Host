@@ -2,7 +2,7 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════╗
 ║  🚀 SERVER HUB — Professional Hosting Control Panel                      ║
-║  Version: 2.0  |  By: SHBH_S1  |  Admin: RIKO                            ║
+║  Version: 2.0  |  By: SHBH_S1  |  Admin: RIKO                       ║
 ╠══════════════════════════════════════════════════════════════════════════╣
 ║  - Full PHP / Node.js / Python support                                   ║
 ║  - Docker user isolation                                                 ║
@@ -119,7 +119,7 @@ SECURITY_ALERTS_FILE = os.path.join(BASE_PATH, 'security_alerts.json')
 NODEJS_PROCS_FILE  = os.path.join(BASE_PATH, 'nodejs_procs.json')
 PHP_CONFIG_FILE    = os.path.join(BASE_PATH, 'php_config.json')
 
-DEFAULT_TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN', '8875119211:AAEe7ExhGuYkqgSoRodEa3idwlO_9DsjqOM')
+DEFAULT_TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN', '8875119211:AAGfYS9qnMo1YsbYf_xWwVlq8HW22FfJMbM')
 DEFAULT_TELEGRAM_OWNER_ID = str(os.environ.get('TELEGRAM_OWNER_ID', '5254495041'))
 
 PROFILE_IMAGE_URL = "https://h.top4top.io/p_3820pynba0.png"
@@ -325,7 +325,9 @@ init_json_file(OWNER_CONFIG_FILE, {
     'bot_username': '', 'owner_control_mode': 'telegram_only',
     'panel_name': 'SERVER HUB', 'welcome_msg': 'Welcome to SERVER HUB',
     'owner_contact_username': 'Shbh_s1',
-    'owner_two_factor': True
+    'owner_two_factor': True,
+    'bot_start_message_ar': 'مرحباً بك في لوحة التحكم. استخدم الأزرار للتنقل.',
+    'bot_start_message_en': 'Welcome to the control panel. Use the buttons to navigate.'
 })
 init_json_file(MAINTENANCE_FILE, {'enabled': False, 'message': 'Under maintenance. Try later.'})
 init_json_file(BOT_STATS_FILE, {'total_users':0,'total_servers':0,'active_bots':0,'zip_files':0,'last_updated':''})
@@ -347,7 +349,9 @@ def load_owner_config():
         'panel_name': 'SERVER HUB',
         'welcome_msg': 'Welcome to SERVER HUB',
         'owner_contact_username': 'Shbh_s1',
-        'owner_two_factor': True
+        'owner_two_factor': True,
+        'bot_start_message_ar': 'مرحباً بك في لوحة التحكم. استخدم الأزرار للتنقل.',
+        'bot_start_message_en': 'Welcome to the control panel. Use the buttons to navigate.'
     }
     cfg = load_json_file(OWNER_CONFIG_FILE, d)
     for k, v in d.items():
@@ -536,6 +540,46 @@ def send_owner_message(text, reply_markup=None):
     except Exception:
         return False
 
+def send_telegram_message(chat_id: str, text: str, parse_mode: str = 'HTML', reply_markup=None, disable_web_page_preview: bool = True):
+    """
+    إرسال رسالة تيليجرام لأي Chat ID باستخدام نفس توكن البوت المرتبط.
+    """
+    cfg = load_owner_config()
+    token = (cfg.get('telegram_token') or '').strip()
+    if not token or not chat_id:
+        return False
+    chat_id = str(chat_id).strip()
+    try:
+        if TELEGRAM_BOT and BOT_RUNTIME.get('running'):
+            TELEGRAM_BOT.send_message(
+                chat_id,
+                text,
+                parse_mode=parse_mode,
+                reply_markup=reply_markup,
+                disable_web_page_preview=disable_web_page_preview
+            )
+        else:
+            payload = {
+                'chat_id': chat_id,
+                'text': text,
+                'parse_mode': parse_mode,
+                'disable_web_page_preview': disable_web_page_preview
+            }
+            # reply_markup يجب أن يكون JSON
+            if reply_markup is not None:
+                try:
+                    payload['reply_markup'] = reply_markup.to_json()
+                except Exception:
+                    pass
+            requests.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json=payload,
+                timeout=12
+            )
+        return True
+    except Exception:
+        return False
+
 def owner_bot_menu():
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
@@ -596,9 +640,11 @@ def user_bot_menu(username):
 def render_public_bot_home():
     stats = get_system_stats()
     cfg = load_owner_config()
+    start_msg = (cfg.get('bot_start_message_ar') or '').strip()
     return (
         f"🤖 <b>{html.escape(cfg.get('panel_name', 'SERVER HUB'))}</b>\n"
-        "لوحة تيليجرام تفاعلية بالكامل بالأزرار.\n\n"
+        + (html.escape(start_msg) + "\n" if start_msg else "")
+        + "لوحة تيليجرام تفاعلية بالكامل بالأزرار.\n\n"
         "لغير المالك يظهر فقط محتوى الاستضافة العام.\n"
         f"• المعالج: <b>{stats.get('cpu', '—')}</b>\n"
         f"• الذاكرة: <b>{stats.get('memory', '—')}</b>\n"
@@ -907,26 +953,14 @@ def start_telegram_owner_bot():
         kb.add(types.InlineKeyboardButton("⬅️ رجوع", callback_data="ownerbot:home"))
         bot.send_message(chat_id, format_pending_summary(), reply_markup=kb)
 
-    def send_broadcast(mode, text_value, target_username=''):
-        text_value = (text_value or '').strip()
-        if not text_value:
-            return 0
-        users = load_users()
-        sent = 0
-        for username_value, info in users.items():
-            if mode == 'target' and username_value != target_username:
-                continue
-            if mode == 'active' and not info.get('active'):
-                continue
-            chat_id = str(info.get('chat_id') or '').strip()
-            if not chat_id:
-                continue
-            try:
-                bot.send_message(chat_id, f"📢 <b>إذاعة من الإدارة</b>\n\n{html.escape(text_value)}")
-                sent += 1
-            except Exception:
-                pass
-        return sent
+    def send_broadcast(mode, kind='text', text_value='', file_id='', buttons=None, target_username=''):
+        """
+        Wrapper على البث العام (يدعم نص/صورة/ملف + أزرار URL).
+        """
+        if kind not in {'text', 'photo', 'document'}:
+            kind = 'text'
+        mode2 = mode if mode in {'all', 'active', 'target'} else 'all'
+        return broadcast_dispatch(mode2, kind=kind, text=text_value or '', file_id=file_id or '', buttons=buttons, target_username=target_username or '')
 
     @bot.message_handler(commands=['start'])
     def owner_bot_start(message):
@@ -993,21 +1027,119 @@ def start_telegram_owner_bot():
                 save_chat_session(chat_id, state)
                 bot.send_message(chat_id, "أرسل التوكن الجديد الآن، وبعده سأطلب منك Owner ID الرقمي.")
             elif data == 'ownerbot:broadcast_help' and username_value == MASTER_USERNAME:
+                kb = types.InlineKeyboardMarkup(row_width=2)
+                kb.add(
+                    types.InlineKeyboardButton("📝 إذاعة نصية", callback_data="ownerbot:broadcast_text_menu"),
+                    types.InlineKeyboardButton("🖼️ إذاعة بصورة", callback_data="ownerbot:broadcast_photo_menu"),
+                )
+                kb.add(
+                    types.InlineKeyboardButton("📎 إذاعة بملف", callback_data="ownerbot:broadcast_file_menu"),
+                    types.InlineKeyboardButton("🔗 إذاعة بأزرار URL", callback_data="ownerbot:broadcast_url_menu"),
+                )
+                kb.add(
+                    types.InlineKeyboardButton("⏰ جدولة إذاعة", callback_data="ownerbot:broadcast_schedule_menu"),
+                    types.InlineKeyboardButton("⬅️ رجوع", callback_data="ownerbot:home"),
+                )
+                bot.edit_message_text("📢 اختر نوع الإذاعة.", chat_id, call.message.message_id, reply_markup=kb)
+
+            elif data in {'ownerbot:broadcast_text_menu','ownerbot:broadcast_photo_menu','ownerbot:broadcast_file_menu','ownerbot:broadcast_url_menu','ownerbot:broadcast_schedule_menu'} and username_value == MASTER_USERNAME:
                 kb = types.InlineKeyboardMarkup(row_width=1)
-                kb.add(types.InlineKeyboardButton("📢 لجميع المستخدمين", callback_data="ownerbot:broadcast_all"))
-                kb.add(types.InlineKeyboardButton("🟢 للمستخدمين النشطين", callback_data="ownerbot:broadcast_active"))
-                kb.add(types.InlineKeyboardButton("👤 لمستخدم محدد", callback_data="ownerbot:broadcast_one"))
-                kb.add(types.InlineKeyboardButton("⬅️ رجوع", callback_data="ownerbot:home"))
-                bot.edit_message_text("اختر نوع الإذاعة.", chat_id, call.message.message_id, reply_markup=kb)
-            elif data in {'ownerbot:broadcast_all', 'ownerbot:broadcast_active', 'ownerbot:broadcast_one'} and username_value == MASTER_USERNAME:
+                prefix = data.replace('_menu','')
+                kb.add(types.InlineKeyboardButton("📢 للجميع", callback_data=f"{prefix}_all"))
+                kb.add(types.InlineKeyboardButton("🟢 للنشطين", callback_data=f"{prefix}_active"))
+                kb.add(types.InlineKeyboardButton("👤 لمستخدم محدد", callback_data=f"{prefix}_one"))
+                kb.add(types.InlineKeyboardButton("⬅️ رجوع", callback_data="ownerbot:broadcast_help"))
+                bot.edit_message_text("اختر المستهدف.", chat_id, call.message.message_id, reply_markup=kb)
+
+            elif data.startswith('ownerbot:broadcast_text_') and username_value == MASTER_USERNAME:
+                mode = data.split('_')[-1]
                 state = get_chat_session(chat_id)
-                state['broadcast_mode'] = data.split('_')[-1]
+                state['broadcast_kind'] = 'text'
+                state['broadcast_mode'] = mode
+                state['broadcast_step'] = 'await_text'
                 state['await_broadcast'] = True
                 save_chat_session(chat_id, state)
-                prompt = "أرسل نص الإذاعة الآن."
-                if state['broadcast_mode'] == 'one':
-                    prompt = "أرسل اسم المستخدم ثم سطر جديد ثم نص الإذاعة."
+                prompt = "📝 أرسل نص الإذاعة الآن."
+                if mode == 'one':
+                    prompt = "📝 أرسل اسم المستخدم ثم سطر جديد ثم نص الإذاعة."
                 bot.send_message(chat_id, prompt)
+
+            elif data.startswith('ownerbot:broadcast_photo_') and username_value == MASTER_USERNAME:
+                mode = data.split('_')[-1]
+                state = get_chat_session(chat_id)
+                state['broadcast_kind'] = 'photo'
+                state['broadcast_mode'] = mode
+                state['await_broadcast'] = True
+                if mode == 'one':
+                    state['broadcast_step'] = 'await_target_media'
+                    state['broadcast_media_kind'] = 'photo'
+                    save_chat_session(chat_id, state)
+                    bot.send_message(chat_id, "👤 أرسل اسم المستخدم المستهدف أولاً.")
+                else:
+                    state['broadcast_step'] = 'await_media'
+                    state['broadcast_media_kind'] = 'photo'
+                    save_chat_session(chat_id, state)
+                    bot.send_message(chat_id, "🖼️ أرسل الصورة الآن (مع تعليق اختياري).")
+
+            elif data.startswith('ownerbot:broadcast_file_') and username_value == MASTER_USERNAME:
+                mode = data.split('_')[-1]
+                state = get_chat_session(chat_id)
+                state['broadcast_kind'] = 'document'
+                state['broadcast_mode'] = mode
+                state['await_broadcast'] = True
+                if mode == 'one':
+                    state['broadcast_step'] = 'await_target_media'
+                    state['broadcast_media_kind'] = 'document'
+                    save_chat_session(chat_id, state)
+                    bot.send_message(chat_id, "👤 أرسل اسم المستخدم المستهدف أولاً.")
+                else:
+                    state['broadcast_step'] = 'await_media'
+                    state['broadcast_media_kind'] = 'document'
+                    save_chat_session(chat_id, state)
+                    bot.send_message(chat_id, "📎 أرسل الملف الآن (مع تعليق اختياري).")
+
+            elif data.startswith('ownerbot:broadcast_url_') and username_value == MASTER_USERNAME:
+                mode = data.split('_')[-1]
+                state = get_chat_session(chat_id)
+                state['broadcast_kind'] = 'url'
+                state['broadcast_mode'] = mode
+                state['await_broadcast'] = True
+                if mode == 'one':
+                    state['broadcast_step'] = 'await_target_url'
+                    save_chat_session(chat_id, state)
+                    bot.send_message(chat_id, "👤 أرسل اسم المستخدم المستهدف أولاً.")
+                else:
+                    state['broadcast_step'] = 'await_url_text'
+                    save_chat_session(chat_id, state)
+                    bot.send_message(chat_id, "🔗 أرسل نص الإذاعة أولاً.")
+
+            elif data.startswith('ownerbot:broadcast_schedule_') and username_value == MASTER_USERNAME:
+                mode = data.split('_')[-1]
+                state = get_chat_session(chat_id)
+                state['broadcast_kind'] = 'schedule'
+                state['broadcast_mode'] = mode
+                state['broadcast_step'] = 'await_schedule_payload'
+                state['await_broadcast'] = True
+                save_chat_session(chat_id, state)
+                if mode == 'one':
+                    bot.send_message(chat_id,
+                        "⏰ أرسل الجدولة بهذه الصيغة:\n"
+                        "username\n"
+                        "CRON (5 حقول)\n"
+                        "---\n"
+                        "نص الإذاعة\n"
+                        "---buttons--- (اختياري)\n"
+                        "عنوان|https://example.com"
+                    )
+                else:
+                    bot.send_message(chat_id,
+                        "⏰ أرسل الجدولة بهذه الصيغة:\n"
+                        "CRON (5 حقول)\n"
+                        "---\n"
+                        "نص الإذاعة\n"
+                        "---buttons--- (اختياري)\n"
+                        "عنوان|https://example.com"
+                    )
             elif data == 'ownerbot:restart' and username_value == MASTER_USERNAME:
                 bot.edit_message_text("♻️ جارٍ إعادة تشغيل اللوحة...", chat_id, call.message.message_id, reply_markup=owner_bot_menu())
                 restart_panel_from_bot()
@@ -1039,12 +1171,48 @@ def start_telegram_owner_bot():
             except Exception:
                 pass
 
-    @bot.message_handler(func=lambda m: True, content_types=['text'])
+    @bot.message_handler(func=lambda m: True, content_types=['text', 'photo', 'document'])
     def owner_bot_text_router(message):
         chat_id = message.chat.id
-        text_value = (message.text or '').strip()
+        content_type = getattr(message, 'content_type', 'text')
+        text_value = ''
+        if content_type == 'text':
+            text_value = (message.text or '').strip()
+        else:
+            text_value = (getattr(message, 'caption', '') or '').strip()
         state = get_chat_session(chat_id)
         users = load_users()
+
+        # أوامر نصية: عربي بدون / ، إنجليزي مع /
+        if content_type == 'text':
+            t = (text_value or '').strip()
+            t_low = t.lower()
+            if t in {'ابدأ', 'القائمة', 'رجوع', 'مساعدة'} or t_low in {'/start', '/menu', '/help', 'start', 'menu', 'help'}:
+                if str(chat_id) == str(load_owner_config().get('telegram_owner_id', '')):
+                    save_chat_session(chat_id, {'logged_in': True, 'username': MASTER_USERNAME, 'role': 'Owner'})
+                push_home(chat_id)
+                return
+            # اختصارات للمالك
+            if str(chat_id) == str(load_owner_config().get('telegram_owner_id', '')):
+                if t in {'اذاعة', 'الإذاعة'} or t_low in {'/broadcast'}:
+                    kb = types.InlineKeyboardMarkup(row_width=2)
+                    kb.add(
+                        types.InlineKeyboardButton("📝 إذاعة نصية", callback_data="ownerbot:broadcast_text_menu"),
+                        types.InlineKeyboardButton("🖼️ إذاعة بصورة", callback_data="ownerbot:broadcast_photo_menu"),
+                    )
+                    kb.add(
+                        types.InlineKeyboardButton("📎 إذاعة بملف", callback_data="ownerbot:broadcast_file_menu"),
+                        types.InlineKeyboardButton("🔗 إذاعة بأزرار URL", callback_data="ownerbot:broadcast_url_menu"),
+                    )
+                    kb.add(
+                        types.InlineKeyboardButton("⏰ جدولة إذاعة", callback_data="ownerbot:broadcast_schedule_menu"),
+                        types.InlineKeyboardButton("⬅️ رجوع", callback_data="ownerbot:home"),
+                    )
+                    bot.send_message(chat_id, "📢 اختر نوع الإذاعة.", reply_markup=kb)
+                    return
+                if t in {'حالة', 'الاحصائيات', 'الإحصائيات'} or t_low in {'/stats'}:
+                    bot.send_message(chat_id, format_owner_stats(), reply_markup=owner_bot_menu())
+                    return
 
         if state.get('await_owner_token') and str(chat_id) == str(load_owner_config().get('telegram_owner_id', '')):
             state['new_token'] = text_value
@@ -1076,21 +1244,200 @@ def start_telegram_owner_bot():
             bot.send_message(chat_id, f"✅ تم تحديث الربط بنجاح إلى @{bot_username}")
             return
 
+        def _clear_broadcast(s):
+            for k in ['await_broadcast','broadcast_kind','broadcast_mode','broadcast_step','broadcast_target','broadcast_text','broadcast_buttons','broadcast_media_kind']:
+                s.pop(k, None)
+            return s
+
+        def _parse_url_buttons(raw: str):
+            out = []
+            for line in (raw or '').splitlines():
+                line = line.strip()
+                if not line or '|' not in line:
+                    continue
+                a, b = line.split('|', 1)
+                label = a.strip()
+                url = b.strip()
+                if label and url.startswith(('http://','https://')):
+                    out.append({'text': label[:48], 'url': url})
+            return out[:8]
+
         if state.get('await_broadcast') and str(chat_id) == str(load_owner_config().get('telegram_owner_id', '')):
+            step = state.get('broadcast_step') or ''
             mode = state.get('broadcast_mode', 'all')
-            target_username = ''
-            message_body = text_value
-            if mode == 'one':
-                parts = text_value.splitlines()
-                if len(parts) < 2:
-                    bot.send_message(chat_id, "أرسل اسم المستخدم في السطر الأول ثم نص الإذاعة في بقية الرسالة.")
+
+            # 1) إذاعة نصية
+            if step == 'await_text':
+                if mode == 'one':
+                    parts = (text_value or '').splitlines()
+                    if len(parts) < 2:
+                        bot.send_message(chat_id, "أرسل اسم المستخدم في السطر الأول ثم نص الإذاعة في بقية الرسالة.")
+                        return
+                    target_username = parts[0].strip()
+                    message_body = '\n'.join(parts[1:]).strip()
+                    if not message_body:
+                        bot.send_message(chat_id, "❌ نص الإذاعة فارغ.")
+                        return
+                    count = send_broadcast('target', kind='text', text_value=f"📢 <b>إذاعة من الإدارة</b>\n\n{html.escape(message_body)}", target_username=target_username)
+                else:
+                    message_body = (text_value or '').strip()
+                    if not message_body:
+                        bot.send_message(chat_id, "❌ نص الإذاعة فارغ.")
+                        return
+                    count = send_broadcast(mode, kind='text', text_value=f"📢 <b>إذاعة من الإدارة</b>\n\n{html.escape(message_body)}")
+                _clear_broadcast(state)
+                save_chat_session(chat_id, state)
+                bot.send_message(chat_id, f"📢 تم الإرسال إلى <b>{count}</b> مستخدم.", reply_markup=owner_bot_menu())
+                return
+
+            # 2) إذاعة صورة/ملف
+            if step == 'await_target_media':
+                target_username = (text_value or '').strip()
+                if target_username not in (users or {}):
+                    bot.send_message(chat_id, "❌ المستخدم غير موجود. أعد إرسال اسم المستخدم.")
                     return
-                target_username = parts[0].strip()
-                message_body = '\n'.join(parts[1:]).strip()
-            count = send_broadcast(mode if mode in {'all', 'active'} else 'target', message_body, target_username)
-            clear_chat_session(chat_id)
-            bot.send_message(chat_id, f"📢 تم الإرسال إلى <b>{count}</b> مستخدم.", reply_markup=owner_bot_menu())
-            return
+                state['broadcast_target'] = target_username
+                state['broadcast_step'] = 'await_media_target'
+                save_chat_session(chat_id, state)
+                if state.get('broadcast_media_kind') == 'photo':
+                    bot.send_message(chat_id, "🖼️ الآن أرسل الصورة (مع تعليق اختياري).")
+                else:
+                    bot.send_message(chat_id, "📎 الآن أرسل الملف (مع تعليق اختياري).")
+                return
+
+            if step in {'await_media', 'await_media_target'}:
+                media_kind = state.get('broadcast_media_kind', 'photo')
+                if media_kind == 'photo' and content_type != 'photo':
+                    bot.send_message(chat_id, "❌ أرسل صورة فقط.")
+                    return
+                if media_kind == 'document' and content_type != 'document':
+                    bot.send_message(chat_id, "❌ أرسل ملف (Document) فقط.")
+                    return
+                file_id = ''
+                if content_type == 'photo':
+                    try:
+                        file_id = message.photo[-1].file_id
+                    except Exception:
+                        file_id = ''
+                elif content_type == 'document':
+                    try:
+                        file_id = message.document.file_id
+                    except Exception:
+                        file_id = ''
+                if not file_id:
+                    bot.send_message(chat_id, "تعذر قراءة الملف. حاول مرة أخرى.")
+                    return
+                caption = (getattr(message, 'caption', '') or '').strip()
+                out_text = "📢 <b>إذاعة من الإدارة</b>\n\n" + html.escape(caption) if caption else "📢 <b>إذاعة من الإدارة</b>"
+                if step == 'await_media_target':
+                    target_username = state.get('broadcast_target', '')
+                    count = send_broadcast('target', kind=media_kind, text_value=out_text, file_id=file_id, target_username=target_username)
+                else:
+                    count = send_broadcast(mode, kind=media_kind, text_value=out_text, file_id=file_id)
+                _clear_broadcast(state)
+                save_chat_session(chat_id, state)
+                bot.send_message(chat_id, f"📢 تم الإرسال إلى <b>{count}</b> مستخدم.", reply_markup=owner_bot_menu())
+                return
+
+            # 3) إذاعة بأزرار URL
+            if step == 'await_target_url':
+                target_username = (text_value or '').strip()
+                if target_username not in (users or {}):
+                    bot.send_message(chat_id, "❌ المستخدم غير موجود. أعد إرسال اسم المستخدم.")
+                    return
+                state['broadcast_target'] = target_username
+                state['broadcast_step'] = 'await_url_text_target'
+                save_chat_session(chat_id, state)
+                bot.send_message(chat_id, "🔗 الآن أرسل نص الإذاعة.")
+                return
+
+            if step in {'await_url_text', 'await_url_text_target'}:
+                state['broadcast_text'] = (text_value or '').strip()
+                state['broadcast_step'] = 'await_url_buttons_target' if step == 'await_url_text_target' else 'await_url_buttons'
+                save_chat_session(chat_id, state)
+                bot.send_message(chat_id, "🔗 أرسل الأزرار بهذا الشكل (سطر لكل زر):\nعنوان|https://example.com\n\n(أرسل رسالة واحدة تحتوي كل الأزرار)")
+                return
+
+            if step in {'await_url_buttons', 'await_url_buttons_target'}:
+                buttons = _parse_url_buttons(text_value)
+                if not buttons:
+                    bot.send_message(chat_id, "❌ لم أجد أزرار صحيحة. أرسل كل سطر: عنوان|رابط يبدأ بـ http")
+                    return
+                msg = "📢 <b>إذاعة من الإدارة</b>\n\n" + html.escape(state.get('broadcast_text', '') or '')
+                if step == 'await_url_buttons_target':
+                    target_username = state.get('broadcast_target', '')
+                    count = send_broadcast('target', kind='text', text_value=msg, buttons=buttons, target_username=target_username)
+                else:
+                    count = send_broadcast(mode, kind='text', text_value=msg, buttons=buttons)
+                _clear_broadcast(state)
+                save_chat_session(chat_id, state)
+                bot.send_message(chat_id, f"📢 تم الإرسال إلى <b>{count}</b> مستخدم.", reply_markup=owner_bot_menu())
+                return
+
+            # 4) جدولة إذاعة
+            if step == 'await_schedule_payload':
+                lines = (message.text or '').splitlines() if content_type == 'text' else []
+                lines = [l.rstrip() for l in lines if l.strip() != '']
+                if not lines:
+                    bot.send_message(chat_id, "أرسل الجدولة كنص فقط حسب الصيغة المطلوبة.")
+                    return
+                target_username = ''
+                cron_expr = ''
+                body_lines = []
+                if mode == 'one':
+                    if len(lines) < 3:
+                        bot.send_message(chat_id, "❌ الصيغة غير صحيحة. تحتاج username ثم cron ثم --- ثم النص.")
+                        return
+                    target_username = lines[0].strip()
+                    cron_expr = lines[1].strip()
+                    body_lines = lines[2:]
+                else:
+                    if len(lines) < 2:
+                        bot.send_message(chat_id, "❌ الصيغة غير صحيحة. تحتاج cron ثم --- ثم النص.")
+                        return
+                    cron_expr = lines[0].strip()
+                    body_lines = lines[1:]
+
+                # split by markers
+                text_part = []
+                btn_part = []
+                mode_part = 'text'
+                for ln in body_lines:
+                    if ln.strip() == '---':
+                        mode_part = 'text'
+                        continue
+                    if ln.strip().lower() == '---buttons---':
+                        mode_part = 'btn'
+                        continue
+                    if mode_part == 'btn':
+                        btn_part.append(ln)
+                    else:
+                        text_part.append(ln)
+                text_msg = '\n'.join(text_part).strip()
+                buttons = _parse_url_buttons('\n'.join(btn_part))
+
+                if len(cron_expr.split()) != 5:
+                    bot.send_message(chat_id, "❌ Cron غير صالح. اكتب 5 حقول مثل: 0 9 * * *")
+                    return
+                if not text_msg:
+                    bot.send_message(chat_id, "❌ نص الإذاعة فارغ.")
+                    return
+
+                sid = add_broadcast_schedule(
+                    owner=MASTER_USERNAME,
+                    mode=mode if mode in {'all','active'} else 'target',
+                    cron_expr=cron_expr,
+                    kind='text',
+                    payload={
+                        'text': "📢 <b>إذاعة مجدولة</b>\n\n" + html.escape(text_msg),
+                        'buttons': buttons,
+                        'target_username': target_username
+                    }
+                )
+                _clear_broadcast(state)
+                save_chat_session(chat_id, state)
+                bot.send_message(chat_id, f"✅ تم حفظ الجدولة بنجاح. ID: <code>{sid}</code>", reply_markup=owner_bot_menu())
+                return
 
         if state.get('stage') == 'await_username':
             if text_value not in users:
@@ -1372,6 +1719,214 @@ def load_packages():      return load_json_file(PACKAGES_FILE)
 def save_packages(p):     save_json_file(PACKAGES_FILE, p)
 def load_ports():         return load_json_file(PORTS_FILE, {'ports':[]}).get('ports',[])
 def save_ports(p):        save_json_file(PORTS_FILE, {'ports':p})
+
+# ─────────────────────────────────────────────
+#  9.5  Broadcast Scheduler (Cron)
+# ─────────────────────────────────────────────
+def _cron_field_match(field: str, value: int, min_val: int, max_val: int, sunday_7: bool = False) -> bool:
+    field = (field or '').strip()
+    if field in {'*', '*/1'}:
+        return True
+    parts = [p.strip() for p in field.split(',') if p.strip()]
+    for part in parts:
+        step = 1
+        base = part
+        if '/' in part:
+            base, step_s = part.split('/', 1)
+            try:
+                step = max(1, int(step_s))
+            except Exception:
+                step = 1
+        if base == '*':
+            return (value - min_val) % step == 0
+        if '-' in base:
+            a, b = base.split('-', 1)
+            try:
+                start = int(a); end = int(b)
+            except Exception:
+                continue
+            if sunday_7 and max_val == 7:
+                # 7 treated as Sunday (0)
+                if start == 7: start = 0
+                if end == 7: end = 0
+            if start <= end:
+                if start <= value <= end and (value - start) % step == 0:
+                    return True
+            else:
+                # wrap range e.g. 22-2
+                if (value >= start or value <= end) and (value - start) % step == 0:
+                    return True
+        else:
+            try:
+                v = int(base)
+            except Exception:
+                continue
+            if sunday_7 and v == 7:
+                v = 0
+            if v == value:
+                return True
+    return False
+
+def cron_matches(dt: datetime, expr: str) -> bool:
+    """
+    cron 5-fields: minute hour day-of-month month day-of-week
+    Supported: *, */n, a-b, a,b,c
+    DOW: 0-6 (Sunday=0). Accept 7 as Sunday.
+    """
+    expr = (expr or '').strip()
+    fields = [f for f in expr.split() if f.strip()]
+    if len(fields) != 5:
+        return False
+    minute, hour, dom, month, dow = fields
+    cron_dow = dt.isoweekday() % 7  # Sunday=0
+    return (
+        _cron_field_match(minute, dt.minute, 0, 59)
+        and _cron_field_match(hour, dt.hour, 0, 23)
+        and _cron_field_match(dom, dt.day, 1, 31)
+        and _cron_field_match(month, dt.month, 1, 12)
+        and _cron_field_match(dow, cron_dow, 0, 7, sunday_7=True)
+    )
+
+def telegram_api_call(method: str, payload: dict, timeout: int = 15):
+    cfg = load_owner_config()
+    token = (cfg.get('telegram_token') or '').strip()
+    if not token:
+        return False, 'missing_token'
+    try:
+        r = requests.post(f'https://api.telegram.org/bot{token}/{method}', json=payload, timeout=timeout)
+        data = r.json() if r.content else {}
+        return bool(data.get('ok')), data
+    except Exception as exc:
+        return False, str(exc)
+
+def telegram_send_any(chat_id: str, kind: str = 'text', text: str = '', file_id: str = '', buttons=None):
+    """
+    kind: text | photo | document
+    buttons: telebot InlineKeyboardMarkup or list of {text,url}
+    """
+    chat_id = str(chat_id or '').strip()
+    if not chat_id:
+        return False
+
+    reply_markup = None
+    if isinstance(buttons, list):
+        kb = types.InlineKeyboardMarkup(row_width=2)
+        for b in buttons[:8]:
+            try:
+                label = str(b.get('text', '')).strip()[:48]
+                url = str(b.get('url', '')).strip()
+                if label and url.startswith(('http://', 'https://')):
+                    kb.add(types.InlineKeyboardButton(label, url=url))
+            except Exception:
+                pass
+        reply_markup = kb
+    elif buttons is not None:
+        reply_markup = buttons
+
+    try:
+        if TELEGRAM_BOT and BOT_RUNTIME.get('running'):
+            if kind == 'photo':
+                TELEGRAM_BOT.send_photo(chat_id, file_id, caption=text or '', reply_markup=reply_markup)
+            elif kind == 'document':
+                TELEGRAM_BOT.send_document(chat_id, file_id, caption=text or '', reply_markup=reply_markup)
+            else:
+                TELEGRAM_BOT.send_message(chat_id, text or '', reply_markup=reply_markup, disable_web_page_preview=True)
+            return True
+    except Exception:
+        pass
+
+    # fallback to HTTP API
+    if kind == 'photo':
+        payload = {'chat_id': chat_id, 'photo': file_id, 'caption': text or '', 'parse_mode': 'HTML'}
+        if reply_markup is not None:
+            try:
+                payload['reply_markup'] = reply_markup.to_json()
+            except Exception:
+                pass
+        ok, _ = telegram_api_call('sendPhoto', payload)
+        return bool(ok)
+    if kind == 'document':
+        payload = {'chat_id': chat_id, 'document': file_id, 'caption': text or '', 'parse_mode': 'HTML'}
+        if reply_markup is not None:
+            try:
+                payload['reply_markup'] = reply_markup.to_json()
+            except Exception:
+                pass
+        ok, _ = telegram_api_call('sendDocument', payload)
+        return bool(ok)
+
+    payload = {'chat_id': chat_id, 'text': text or '', 'parse_mode': 'HTML', 'disable_web_page_preview': True}
+    if reply_markup is not None:
+        try:
+            payload['reply_markup'] = reply_markup.to_json()
+        except Exception:
+            pass
+    ok, _ = telegram_api_call('sendMessage', payload)
+    return bool(ok)
+
+def broadcast_dispatch(mode: str, kind: str = 'text', text: str = '', file_id: str = '', buttons=None, target_username: str = '') -> int:
+    users = load_users()
+    sent = 0
+    for username_value, info in (users or {}).items():
+        if mode == 'target' and username_value != target_username:
+            continue
+        if mode == 'active' and not info.get('active'):
+            continue
+        chat_id = str(info.get('chat_id') or info.get('telegram_id') or '').strip()
+        if not chat_id:
+            continue
+        if telegram_send_any(chat_id, kind=kind, text=text, file_id=file_id, buttons=buttons):
+            sent += 1
+    return sent
+
+def add_broadcast_schedule(owner: str, mode: str, cron_expr: str, kind: str, payload: dict):
+    schedules = load_schedules() or {}
+    sid = str(uuid.uuid4())[:10]
+    schedules[sid] = {
+        'id': sid,
+        'type': 'broadcast',
+        'owner': owner,
+        'mode': mode,
+        'kind': kind,
+        'payload': payload or {},
+        'schedule': cron_expr,
+        'created_at': datetime.now().isoformat(),
+        'last_run': ''
+    }
+    save_schedules(schedules)
+    return sid
+
+def _broadcast_scheduler_loop():
+    while True:
+        try:
+            now = datetime.now().replace(second=0, microsecond=0)
+            run_key = now.strftime('%Y-%m-%d %H:%M')
+            schedules = load_schedules() or {}
+            changed = False
+            for sid, sch in list(schedules.items()):
+                if not isinstance(sch, dict) or sch.get('type') != 'broadcast':
+                    continue
+                if sch.get('last_run') == run_key:
+                    continue
+                if cron_matches(now, sch.get('schedule', '')):
+                    payload = sch.get('payload', {}) or {}
+                    mode = sch.get('mode', 'all')
+                    kind = sch.get('kind', 'text')
+                    target_username = payload.get('target_username', '')
+                    text = payload.get('text', '')
+                    file_id = payload.get('file_id', '')
+                    buttons = payload.get('buttons', None)
+                    count = broadcast_dispatch(mode if mode in {'all', 'active'} else 'target', kind=kind, text=text, file_id=file_id, buttons=buttons, target_username=target_username)
+                    sch['last_run'] = run_key
+                    sch['last_result'] = f'sent:{count}'
+                    changed = True
+            if changed:
+                save_schedules(schedules)
+        except Exception:
+            pass
+        time.sleep(20)
+
+threading.Thread(target=_broadcast_scheduler_loop, daemon=True).start()
 
 # ─────────────────────────────────────────────
 #  10.  User Paths & Session Helpers
@@ -2249,7 +2804,8 @@ body::before{
       </form>
 
       <form class="form" id="register-form" method="post" action="/register">
-        <div class="field"><label>Username</label><input name="username" placeholder="Choose a username" required autocomplete="username"></div>
+        <div class="field"><label>اسم المستخدم</label><input name="username" placeholder="اختر اسم مستخدم" required autocomplete="username"></div>
+        <div class="field"><label>🆔 Telegram ID <span style="color:#f85149">*</span></label><input name="tg_id" placeholder="5254495041" inputmode="numeric" pattern="[0-9]+" required autocomplete="off"></div>
         <div class="field"><label>🔵 Telegram Username <span style="color:#f85149">*</span></label><input name="tg_username" placeholder="@yourusername" required autocomplete="off"></div>
         <div class="field"><label>Password</label><input type="password" name="password" placeholder="Min 4 characters" required autocomplete="new-password"></div>
         <div class="field"><label>Confirm Password</label><input type="password" name="confirm_password" placeholder="Repeat password" required autocomplete="new-password"></div>
@@ -2376,6 +2932,47 @@ def get_html_template(is_master, username=None):
     </div>
   </div>
 
+  <!-- Telegram Settings -->
+  <div class="section-card" id="bot-control-panel">
+    <div class="section-head">⚙️ Telegram Settings</div>
+    <div class="section-body">
+      <div class="field-block"><label>Bot Token</label><input id="tg-token" type="password" placeholder="123456:ABC..."></div>
+      <div class="field-block"><label>Owner ID</label><input id="tg-ownerid" placeholder="5254495041"></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+        <button class="btn-action" onclick="linkBot()">💾 حفظ وربط</button>
+        <button class="btn-action danger" onclick="unlinkBot()">🔌 فصل</button>
+        <button class="btn-action gray" onclick="botAction('start')">▶ تشغيل البوت</button>
+        <button class="btn-action gray" onclick="botAction('stop')">⏸ إيقاف البوت</button>
+        <button class="btn-action gray" onclick="botAction('restart')">🔄 إعادة تشغيل البوت</button>
+        <button class="btn-action gray" onclick="testTelegramBot()">🧪 اختبار البوت</button>
+      </div>
+
+      <div class="field-block"><label>رسالة /start (عربي)</label>
+        <textarea id="bot-start-ar" rows="2" style="width:100%;padding:10px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#e6edf3;font-size:13px;resize:vertical"></textarea>
+      </div>
+      <div class="field-block"><label>/start Message (English)</label>
+        <textarea id="bot-start-en" rows="2" style="width:100%;padding:10px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#e6edf3;font-size:13px;resize:vertical"></textarea>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+        <button class="btn-action" onclick="saveStartMessages()">💾 حفظ رسالة البدء</button>
+        <button class="btn-action gray" onclick="sendBotCmd()">🖥 تنفيذ أمر (يرسل للمالك)</button>
+      </div>
+
+      <div class="field-block"><label>تغيير صورة البوت</label>
+        <input id="bot-photo-file" type="file" accept="image/*">
+      </div>
+      <button class="btn-action gray" onclick="uploadBotPhoto()">🖼️ رفع وتحديث صورة البوت</button>
+
+      <div class="field-block" style="margin-top:12px"><label>Bot Console</label>
+        <textarea id="bot-console" rows="6" readonly style="width:100%;padding:10px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#e6edf3;font-size:12px;resize:none"></textarea>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <input id="bot-cmd-input" placeholder="مثال: uptime" style="flex:1;min-width:160px;padding:10px;background:#0d1117;border:1px solid #30363d;border-radius:8px;color:#e6edf3">
+        <button class="btn-action" onclick="sendBotCmd()">إرسال</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Panel Settings -->
   <div class="section-card">
     <div class="section-head">⚙️ Panel Settings</div>
@@ -2393,7 +2990,7 @@ def get_html_template(is_master, username=None):
       <div class="field-block"><label>New Announcement</label><input id="ann-txt" placeholder="Type announcement..."></div>
       <div style="display:flex;gap:8px;margin-bottom:12px">
         <button class="btn-action" onclick="addAnnouncement()">Add</button>
-        <button class="btn-action gray" onclick="ownerBroadcast()">📡 Broadcast</button>
+        <button class="btn-action gray" onclick="ownerBroadcast()">📡 الإذاعة من البوت</button>
       </div>
       <div id="ann-list"></div>
     </div>
@@ -4772,17 +5369,20 @@ async function loadOwnerPanel(){
     const botPanel=document.getElementById('bot-control-panel');
     if(ownerCfg.bot_linked){
       if(badge) badge.innerHTML='<span style="color:var(--green);font-size:13px;font-weight:700">✅ البوت مربوط</span>' + (ownerCfg.bot_running ? ' <span style="color:var(--green)">• يعمل الآن</span>' : ' <span style="color:var(--yellow)">• متوقف</span>');
-      if(botPanel) botPanel.style.display='none';
+      if(botPanel) botPanel.style.display='block';
     } else {
       if(badge) badge.innerHTML='<span style="color:var(--yellow);font-size:13px;font-weight:700">⚠️ البوت غير مربوط</span>';
-      if(botPanel) botPanel.style.display='none';
+      if(botPanel) botPanel.style.display='block';
     }
     const pnEl=document.getElementById('panel-name-inp');
     const pwEl=document.getElementById('panel-welcome-inp');
     const stEl=document.getElementById('bot-link-status');
     if(pnEl) pnEl.value=ownerCfg.panel_name||'SERVER HUB';
     if(pwEl) pwEl.value=ownerCfg.welcome_msg||'';
-    if(stEl) stEl.textContent='معرف المالك: '+(ownerCfg.telegram_owner_id||'—')+' • وضع الإدارة: بوت فقط';
+    if(stEl) stEl.textContent='معرف المالك: '+(ownerCfg.telegram_owner_id||'—')+' • Username: @'+(ownerCfg.bot_username||'—')+' • وضع الإدارة: بوت فقط';
+    const oid=document.getElementById('tg-ownerid'); if(oid) oid.value=(ownerCfg.telegram_owner_id||'').toString();
+    const ar=document.getElementById('bot-start-ar'); if(ar) ar.value=ownerCfg.bot_start_message_ar||'';
+    const en=document.getElementById('bot-start-en'); if(en) en.value=ownerCfg.bot_start_message_en||'';
     loadOwnerZips();
     loadAnnouncements();
     loadPendingUsers();
@@ -4831,6 +5431,37 @@ async function botAction(action){
   const bc=document.getElementById('bot-console');
   if(bc) bc.textContent+='['+new Date().toLocaleTimeString()+'] '+action+': '+(d.message||d.error||'done')+'\n';
   toast(d.success?'Bot '+action:'Failed', !d.success);
+}
+
+async function testTelegramBot(){
+  const bc=document.getElementById('bot-console');
+  if(bc) bc.textContent+='['+new Date().toLocaleTimeString()+'] test: ...\n';
+  const r=await fetch('/api/owner/telegram/test',{method:'POST'});
+  const d=await r.json();
+  if(bc) bc.textContent+='→ '+(d.success?('OK @'+((d.username||'')||'')):(d.error||'Failed'))+'\n';
+  toast(d.success?'✅ Bot OK':'❌ Bot failed', !d.success);
+}
+
+async function saveStartMessages(){
+  const ar=document.getElementById('bot-start-ar').value.trim();
+  const en=document.getElementById('bot-start-en').value.trim();
+  const r=await fetch('/api/owner/telegram/start-message',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ar,en})});
+  const d=await r.json();
+  const bc=document.getElementById('bot-console');
+  if(bc) bc.textContent+='['+new Date().toLocaleTimeString()+'] start_message: '+(d.success?'saved':(d.error||'failed'))+'\n';
+  toast(d.success?'✅ Saved':'Failed', !d.success);
+}
+
+async function uploadBotPhoto(){
+  const f=document.getElementById('bot-photo-file').files[0];
+  if(!f){ toast('اختر صورة أولاً', true); return; }
+  const fd=new FormData(); fd.append('photo', f);
+  const bc=document.getElementById('bot-console');
+  if(bc) bc.textContent+='['+new Date().toLocaleTimeString()+'] upload_photo: ...\n';
+  const r=await fetch('/api/owner/telegram/photo',{method:'POST',body:fd});
+  const d=await r.json();
+  if(bc) bc.textContent+='→ '+(d.success?'OK':(d.error||'failed'))+'\n';
+  toast(d.success?'✅ Photo updated':'Failed', !d.success);
 }
 
 async function sendBotCmd(){
@@ -4985,11 +5616,7 @@ async function deleteAnn(idx){
 }
 
 async function ownerBroadcast(){
-  const txt=document.getElementById('ann-txt').value.trim();
-  if(!txt){ toast('Enter message first', true); return; }
-  const r=await fetch('/api/owner/broadcast',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:txt})});
-  const d=await r.json();
-  toast(d.success?`📡 Sent to ${d.count||0} users`:'Failed', !d.success);
+  toast('📢 الإذاعة تم نقلها بالكامل للبوت (استخدم زر الإذاعة داخل بوت المالك)', true, true);
 }
 
 async function loadPendingUsers(){
@@ -5222,6 +5849,45 @@ a{color:#8fb2ff;text-decoration:none}
 </html>
 '''
 
+USER_VERIFY_TEMPLATE = r'''
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>تفعيل الحساب</title>
+<style>
+body{margin:0;font-family:Inter,Segoe UI,sans-serif;background:#070b12;color:#fff;display:flex;align-items:center;justify-content:center;min-height:100vh;background-image:radial-gradient(circle at top,#172033 0,#070b12 60%)}
+.card{width:min(92vw,480px);background:#101826;border:1px solid #22304a;border-radius:18px;padding:28px;box-shadow:0 30px 80px rgba(0,0,0,.45)}
+h1{margin:0 0 10px;font-size:24px}.muted{color:#96a2bb;line-height:1.8;font-size:14px}
+input{width:100%;margin-top:14px;background:#0b1320;border:1px solid #2b3b59;border-radius:12px;color:#fff;padding:14px;font-size:16px;outline:none}
+button{width:100%;margin-top:16px;padding:14px;border:0;border-radius:12px;background:linear-gradient(135deg,#5b8cff,#7c5cfc);color:#fff;font-weight:800;cursor:pointer}
+.err{margin-top:14px;color:#ff8f8f;line-height:1.6}.ok{margin-top:14px;color:#7df0b5;line-height:1.6}
+a{color:#8fb2ff;text-decoration:none}
+.tip{margin-top:10px;padding:10px 12px;border-radius:12px;background:#0b1320;border:1px solid #22304a;color:#b7c2d8;font-size:13px;line-height:1.8}
+code{background:rgba(255,255,255,.06);padding:2px 6px;border-radius:6px}
+</style>
+</head>
+<body>
+<form class="card" method="post">
+  <h1>تفعيل الحساب</h1>
+  <div class="muted">تم إرسال رمز تحقق إلى تيليجرامك. أدخله هنا لتفعيل الحساب.</div>
+  <input type="text" name="username" placeholder="اسم المستخدم" value="{{ username or '' }}" required autocomplete="username">
+  <input type="text" name="code" placeholder="رمز التحقق (6 أرقام)" inputmode="numeric" pattern="[0-9]+" required autocomplete="one-time-code">
+  {% if error %}<div class="err">{{ error }}</div>{% endif %}
+  {% if ok %}<div class="ok">{{ ok }}</div>{% endif %}
+  <button type="submit">تفعيل</button>
+  <div class="tip">
+    إذا لم يصلك الكود:
+    <br>1) تأكد أن <code>Telegram ID</code> صحيح
+    <br>2) تأكد أن البوت مربوط من لوحة المالك
+  </div>
+  <div class="muted" style="margin-top:14px"><a href="/login">العودة لتسجيل الدخول</a></div>
+</form>
+</body>
+</html>
+'''
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  20.  Flask Routes
 # ─────────────────────────────────────────────────────────────────────────────
@@ -5277,11 +5943,22 @@ def login_page():
     
     users = load_users()
     if username in users and users[username].get('password') == h:
-        if not users[username].get('active', False):
+        uinfo = users.get(username, {}) if isinstance(users, dict) else {}
+        if not uinfo.get('active', False):
+            # تمييز بين: غير مُفعّل بسبب كود تيليجرام وبين انتظار موافقة
+            if uinfo.get('verify_code') and not uinfo.get('verified', False):
+                log_activity(username, 'auth.login.denied', 'Not verified')
+                return render_template_string(
+                    AUTH_TEMPLATE,
+                    error='⚠️ حسابك غير مُفعّل بعد. ادخل رمز التحقق من تيليجرام في صفحة التفعيل: /verify',
+                    error_type='login'
+                )
             log_activity(username, 'auth.login.denied', 'Pending approval')
-            return render_template_string(AUTH_TEMPLATE,
+            return render_template_string(
+                AUTH_TEMPLATE,
                 error=f'⚠️ حسابك بانتظار الموافقة. تواصل مع @{get_owner_contact()}',
-                error_type='login')
+                error_type='login'
+            )
         if can_user_login(username):
             session.permanent = True
             session['logged_in'] = True
@@ -5342,10 +6019,13 @@ def register_page():
     username    = request.form.get('username','').strip()
     password    = request.form.get('password','')
     confirm     = request.form.get('confirm_password','')
+    tg_id       = (request.form.get('tg_id','') or '').strip()
     tg_username = request.form.get('tg_username','').strip().lstrip('@')
 
     if not username or not password:
         return render_template_string(AUTH_TEMPLATE, error='❌ يرجى ملء جميع الحقول المطلوبة', error_type='register')
+    if not tg_id or not tg_id.isdigit():
+        return render_template_string(AUTH_TEMPLATE, error='❌ Telegram ID يجب أن يكون رقمياً فقط', error_type='register')
     if not tg_username:
         return render_template_string(AUTH_TEMPLATE, error='❌ يرجى إدخال يوزر التيليجرام', error_type='register')
     if password != confirm:
@@ -5363,8 +6043,11 @@ def register_page():
 
     # 7 days free trial
     expiry_dt = (datetime.now() + timedelta(days=7)).isoformat()
+    verify_code = ''.join(random.choice(string.digits) for _ in range(6))
+    verify_expires = (datetime.now() + timedelta(minutes=10)).isoformat()
     users[username] = {
         'password':     hashlib.sha256(password.encode()).hexdigest(),
+        'telegram_id':  tg_id,
         'tg_username':  tg_username,
         'chat_id':      '',
         'role':         'User',
@@ -5374,21 +6057,84 @@ def register_page():
         'created':      datetime.now().isoformat(),
         'expiry':       expiry_dt,
         'plan':         'free_trial',
-        'active':       False  # requires admin approval
+        'verified':     False,
+        'verify_code':  verify_code,
+        'verify_expires': verify_expires,
+        'active':       False
     }
     # persist immediately to DB / KV
     save_users(users)
     ensure_user_folder(username)
-    log_activity(username, 'auth.register', f'tg=@{tg_username} | awaiting approval')
+    ip_addr = get_request_ip()
+    log_activity(username, 'auth.register', f'tg_id={tg_id} | tg=@{tg_username} | verify_pending')
+
+    # إشعار للمالك فوراً (مثل المطلوب)
     send_owner_message(
-        "🆕 <b>طلب تسجيل جديد</b>\n"
-        f"• المستخدم: <b>{html.escape(username)}</b>\n"
-        f"• تيليجرام: @{html.escape(tg_username)}\n"
-        "راجع الطلب من أزرار الإدارة داخل البوت."
+        "👤 <b>مستخدم جديد</b>\n\n"
+        f"الاسم:\n{html.escape(username)}\n\n"
+        f"الايدي:\n<code>{html.escape(tg_id)}</code>\n\n"
+        f"اليوزر:\n@{html.escape(tg_username)}\n\n"
+        f"IP:\n<code>{html.escape(ip_addr)}</code>"
     )
+
+    # إرسال رمز التحقق للمستخدم على تيليجرام
+    ok_sent = send_telegram_message(
+        tg_id,
+        "📨 <b>رمز التحقق:</b>\n"
+        f"<code>{verify_code}</code>\n\n"
+        "ادخل الرمز في الموقع لتفعيل حسابك.\n"
+        "⏳ مدة صلاحية الرمز: 10 دقائق."
+    )
+
     return render_template_string(AUTH_TEMPLATE,
-        error=f'✅ تم إرسال طلب التسجيل! انتظر موافقة الأدمن.\nيوزر تيليجرامك: @{tg_username}',
+        error=(
+            "✅ تم إنشاء الحساب.\n"
+            + ("📨 تم إرسال رمز التحقق إلى تيليجرامك.\n" if ok_sent else "⚠️ تعذر إرسال رمز التحقق (تأكد أن البوت مربوط والتوكن صحيح).\n")
+            + "اذهب لصفحة التفعيل: /verify"
+        ),
         error_type='register')
+
+@app.route('/verify', methods=['GET', 'POST'])
+def verify_user_page():
+    if request.method == 'GET':
+        return render_template_string(USER_VERIFY_TEMPLATE, error=None, ok=None, username=request.args.get('username','').strip())
+    username = (request.form.get('username') or '').strip()
+    code = (request.form.get('code') or '').strip()
+    if not username or not code:
+        return render_template_string(USER_VERIFY_TEMPLATE, error='❌ أدخل اسم المستخدم والرمز.', ok=None, username=username)
+    users = load_users()
+    info = users.get(username) if isinstance(users, dict) else None
+    if not isinstance(info, dict):
+        return render_template_string(USER_VERIFY_TEMPLATE, error='❌ الحساب غير موجود.', ok=None, username=username)
+    if info.get('verified') and info.get('active'):
+        return render_template_string(USER_VERIFY_TEMPLATE, error=None, ok='✅ الحساب مُفعّل بالفعل. يمكنك تسجيل الدخول الآن.', username=username)
+    try:
+        exp = datetime.fromisoformat(info.get('verify_expires') or '')
+        if exp < datetime.now():
+            return render_template_string(USER_VERIFY_TEMPLATE, error='⏳ انتهت صلاحية الرمز. أعد التسجيل للحصول على رمز جديد.', ok=None, username=username)
+    except Exception:
+        pass
+    if str(info.get('verify_code')) != str(code):
+        return render_template_string(USER_VERIFY_TEMPLATE, error='❌ رمز التحقق غير صحيح.', ok=None, username=username)
+
+    info['verified'] = True
+    info['active'] = True
+    info.pop('verify_code', None)
+    info.pop('verify_expires', None)
+    users[username] = info
+    save_users(users)
+    log_activity(username, 'auth.verify', 'Telegram code verified')
+
+    ip_addr = get_request_ip()
+    send_owner_message(
+        "✅ <b>تم تفعيل حساب جديد</b>\n"
+        f"• المستخدم: <b>{html.escape(username)}</b>\n"
+        f"• Telegram ID: <code>{html.escape(str(info.get('telegram_id','')))}</code>\n"
+        f"• Telegram: @{html.escape(str(info.get('tg_username','-')))}\n"
+        f"• IP: <code>{html.escape(ip_addr)}</code>"
+    )
+
+    return render_template_string(USER_VERIFY_TEMPLATE, error=None, ok='✅ تم تفعيل الحساب بنجاح. يمكنك تسجيل الدخول الآن.', username=username)
 
 @app.route('/logout')
 def logout():
@@ -6406,6 +7152,54 @@ def owner_bot_action():
     except Exception as e:
         return jsonify({'success':False,'error':str(e)})
 
+@app.route('/api/owner/telegram/test', methods=['POST'])
+@master_required
+def owner_telegram_test():
+    ok, data = telegram_api_call('getMe', {})
+    if not ok:
+        return jsonify({'success': False, 'error': str(data)}), 400
+    result = (data or {}).get('result', {}) if isinstance(data, dict) else {}
+    return jsonify({'success': True, 'username': result.get('username',''), 'result': result})
+
+@app.route('/api/owner/telegram/start-message', methods=['GET', 'POST'])
+@master_required
+def owner_telegram_start_message():
+    cfg = load_owner_config()
+    if request.method == 'GET':
+        return jsonify({
+            'success': True,
+            'ar': cfg.get('bot_start_message_ar', ''),
+            'en': cfg.get('bot_start_message_en', '')
+        })
+    d = request.json or {}
+    ar = (d.get('ar') or '').strip()
+    en = (d.get('en') or '').strip()
+    _update_owner_cfg(bot_start_message_ar=ar, bot_start_message_en=en)
+    log_activity(session['username'], 'bot.start_message.update', f'ar={len(ar)} en={len(en)}')
+    return jsonify({'success': True})
+
+@app.route('/api/owner/telegram/photo', methods=['POST'])
+@master_required
+def owner_telegram_photo():
+    cfg = load_owner_config()
+    token = (cfg.get('telegram_token') or '').strip()
+    if not token:
+        return jsonify({'success': False, 'error': 'Bot token missing'}), 400
+    f = request.files.get('photo')
+    if not f:
+        return jsonify({'success': False, 'error': 'No photo uploaded'}), 400
+    try:
+        filename = secure_filename(getattr(f, 'filename', '') or 'photo.jpg')
+        files = {'photo': (filename, f.stream, getattr(f, 'mimetype', 'image/jpeg'))}
+        r = requests.post(f'https://api.telegram.org/bot{token}/setMyProfilePhoto', files=files, timeout=25)
+        data = r.json() if r.content else {}
+        if data.get('ok'):
+            log_activity(session['username'], 'bot.photo.update', filename)
+            return jsonify({'success': True})
+        return jsonify({'success': False, 'error': data}), 400
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 @app.route('/api/owner/bot/cmd', methods=['POST'])
 @master_required
 def owner_bot_cmd():
@@ -6523,34 +7317,7 @@ def owner_delete_announcement():
 @app.route('/api/owner/broadcast', methods=['POST'])
 @master_required
 def owner_broadcast():
-    d = request.json or {}
-    msg = d.get('message','').strip()
-    if not msg: return jsonify({'success':False,'error':'Empty message'})
-    count = 0
-    for username_value, info in load_users().items():
-        if not info.get('active'):
-            continue
-        chat_id = str(info.get('chat_id') or '').strip()
-        if not chat_id:
-            continue
-        try:
-            if TELEGRAM_BOT and BOT_RUNTIME.get('running'):
-                TELEGRAM_BOT.send_message(chat_id, f"📢 <b>إذاعة من الإدارة</b>\n\n{html.escape(msg)}")
-            else:
-                cfg = load_owner_config()
-                requests.post(
-                    f"https://api.telegram.org/bot{cfg['telegram_token']}/sendMessage",
-                    json={'chat_id': chat_id, 'text': f"📢 إذاعة من الإدارة\n\n{msg}"},
-                    timeout=10
-                )
-            count += 1
-        except Exception:
-            pass
-    data = load_announcements()
-    data['list'].insert(0,{'text':f'[BROADCAST] {msg}','time':datetime.now().strftime('%Y-%m-%d %H:%M')})
-    save_announcements(data)
-    log_activity(session['username'],'owner.broadcast',msg[:80])
-    return jsonify({'success':True,'count':count})
+    return jsonify({'success': False, 'error': 'تم نقل الإذاعة بالكامل إلى بوت تيليجرام. استخدم زر الإذاعة داخل البوت.'}), 403
 
 @app.route('/api/owner/action', methods=['POST'])
 @master_required
